@@ -11,6 +11,11 @@ h1 {
   font-size: 1.5rem;
 }
 
+.line-number {
+  text-align: right;
+  margin-right: 8px;
+}
+
 .file-report {
   display: flex;
 }

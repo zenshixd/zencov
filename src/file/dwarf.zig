@@ -804,7 +804,6 @@ pub const LineNumberProgram = struct {
             return null;
         }
 
-        var line_mapped = false;
         const opcode: DW.LNS = @enumFromInt(self.fbr.readByte() catch return error.UnexpectedDebugLineSectionEnd);
         if (opcode == DW.LNS.extended_op) {
             // extended opcode
@@ -848,16 +847,26 @@ pub const LineNumberProgram = struct {
             self.prologue_end = false;
             self.epilogue_begin = false;
             self.discriminator = 0;
-            line_mapped = true;
+            return LineInfo{
+                .file = self.file,
+                .address = self.vmaddr_base + self.address,
+                .line = self.line,
+                .col = self.column,
+            };
         } else {
             // Regular opcodes
             switch (opcode) {
                 DW.LNS.copy => {
-                    line_mapped = true;
                     self.discriminator = 0;
                     self.basic_block = false;
                     self.prologue_end = false;
                     self.epilogue_begin = false;
+                    return LineInfo{
+                        .file = self.file,
+                        .address = self.vmaddr_base + self.address,
+                        .line = self.line,
+                        .col = self.column,
+                    };
                 },
                 DW.LNS.advance_pc => {
                     const advance_value = self.fbr.readUleb128(u64) catch return error.UnexpectedDebugLineSectionEnd;
@@ -904,15 +913,6 @@ pub const LineNumberProgram = struct {
                 },
                 else => unreachable,
             }
-        }
-
-        if (line_mapped) {
-            return LineInfo{
-                .file = self.file,
-                .address = self.vmaddr_base + self.address,
-                .line = self.line,
-                .col = self.column,
-            };
         }
 
         return null;

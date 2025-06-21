@@ -26,18 +26,16 @@ pub const ByteCodeFormatter = struct {
     }
 };
 
-pub fn fmtByteCode(bytes: []const u8, at: usize) ByteCodeFormatter {
-    assert(bytes.len % 4 == 0);
-    return .{
-        .at = at,
-        .bytes = bytes,
-    };
-}
-
-pub const SourceFilepathFormatter = struct {
+pub const SourceFilepathFmt = struct {
     source_file: core.SourceFile,
 
-    pub fn format(self: SourceFilepathFormatter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn init(source_file: core.SourceFile) SourceFilepathFmt {
+        return .{
+            .source_file = source_file,
+        };
+    }
+
+    pub fn format(self: SourceFilepathFmt, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
         const comp_dir = core.string_interner.lookup(self.source_file.comp_dir).?;
@@ -53,10 +51,3 @@ pub const SourceFilepathFormatter = struct {
         try writer.writeAll(filename);
     }
 };
-
-pub fn fmtSourceFilepath(debug_info: *const DebugInfo, id: core.SourceFileId) SourceFilepathFormatter {
-    const source_file = debug_info.source_files[@intFromEnum(id)];
-    return .{
-        .source_file = source_file,
-    };
-}

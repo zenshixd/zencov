@@ -1,3 +1,9 @@
+// TODO: branch coverage
+// TODO: C macros support
+// TODO: what about different DWARF versions? I can parse DWARF4, but what about DWARF5?
+// TODO: pretty report
+// TODO: better grid for index.html files
+
 const std = @import("std");
 const assert = std.debug.assert;
 const panic = std.debug.panic;
@@ -8,6 +14,11 @@ const core = @import("core.zig");
 const os = core.os;
 const platform = @import("platform.zig");
 const report = @import("report.zig");
+const bp = @import("breakpoints.zig");
+const cov = @import("coverage.zig");
+
+const TestBed = @import("test/test_bed.zig");
+const snap = @import("test/snapshots.zig").snap;
 
 pub fn main() !void {
     defer {
@@ -19,75 +30,14 @@ pub fn main() !void {
         // Check for leaks
         _ = core.debug_allocator.deinit();
     }
+    const args = try std.process.argsAlloc(core.arena);
 
-    const tracee = "zig-out/bin/tracee";
-
-    core.pid = os.spawnForTracing(&.{tracee});
-    os.setupBreakpointHandler(core.pid, &breakpointHandler);
-
-    const base_vm_region = os.getMemoryRegion(core.pid, 0);
-
-    std.log.debug("Child process base addr: {*}", .{base_vm_region});
-    const debug_info = DebugInfo.init(@intFromPtr(base_vm_region.ptr), tracee);
-
-    var line_it = debug_info.line_info.iterator();
-    while (line_it.next()) |entry| {
-        std.log.debug("Setting breakpoint in {} at line {d}", .{ core.fmtSourceFilepath(&debug_info, entry.value_ptr.source_file), entry.value_ptr.line });
-        const bp = createBreakpoint(@ptrFromInt(entry.value_ptr.address));
-        core.breakpoints.put(entry.value_ptr.address, bp) catch unreachable;
-    }
-
-    os.processResume(core.pid);
-    os.waitForPid(core.pid);
-
-    var breakpoints_triggered: usize = 0;
-    var bp_it = core.breakpoints.iterator();
-    while (bp_it.next()) |entry| {
-        if (entry.value_ptr.triggered) {
-            breakpoints_triggered += 1;
-        }
-    }
-
-    std.log.debug("Breakpoints triggered: {d}/{d}", .{ breakpoints_triggered, core.breakpoints.count() });
-    report.generateReport(&.{tracee}, debug_info);
+    const tracee_cmd = args[1..];
+    const debug_info = DebugInfo.init(tracee_cmd[0], .only_comp_dir);
+    bp.runInstrumentedAndWait(tracee_cmd, &debug_info);
+    const coverage_info = cov.getCoverageInfo(&debug_info);
+    report.generateReport(tracee_cmd, debug_info.source_files, coverage_info);
 }
-
-fn breakpointHandler(pc: usize) bool {
-    const bp = core.breakpoints.getPtr(pc) orelse return false;
-    removeBreakpoint(bp);
-    bp.triggered = true;
-    return true;
-}
-
-pub fn createBreakpoint(at: [*]u8) core.Breakpoint {
-    std.log.debug("createBreakpoint: pid: {}, at: {*}", .{ core.pid, at });
-
-    const prev_opcode = os.readMemory(core.pid, core.InstructionSize, at);
-
-    const instruction_addr = at[0..@sizeOf(core.InstructionSize)];
-    os.setMemoryProtection(core.pid, instruction_addr, .{ .READ = 1, .WRITE = 1, .COPY = 1 });
-    os.writeMemory(core.pid, instruction_addr, std.mem.asBytes(&core.BRK_OPCODE));
-    os.setMemoryProtection(core.pid, instruction_addr, .{ .READ = 1, .EXEC = 1 });
-
-    return .{
-        .enabled = true,
-        .addr = at,
-        .original_opcode = prev_opcode,
-        .triggered = false,
-    };
-}
-
-pub fn removeBreakpoint(breakpoint: *core.Breakpoint) void {
-    std.log.debug("removeBreakpoint: pid: {}, breakpoint: {}", .{ core.pid, breakpoint });
-
-    const instruction_addr = breakpoint.addr[0..@sizeOf(core.InstructionSize)];
-    os.setMemoryProtection(core.pid, instruction_addr, .{ .READ = 1, .WRITE = 1, .COPY = 1 });
-    os.writeMemory(core.pid, instruction_addr, std.mem.asBytes(&breakpoint.original_opcode));
-    os.setMemoryProtection(core.pid, instruction_addr, .{ .READ = 1, .EXEC = 1 });
-
-    breakpoint.enabled = false;
-}
-
 pub const std_options: std.Options = .{
     .log_level = if (builtin.mode == .Debug) .debug else .info,
     .logFn = covLog,
@@ -117,4 +67,27 @@ fn covLog(
 }
 test {
     _ = @import("core/enum_mask.zig");
+    _ = @import("test/snapshots.zig");
+}
+
+test "basic" {
+    var t = TestBed.runTest("zig-out/bin/basic", .only_comp_dir);
+    defer t.deinit();
+
+    try t.expectCoverageInfo(snap(@src(),
+        \\File: /Users/ownelek/Projects/zencov/tests/basic/basic.zig
+        \\ 1 [-]: const std = @import("std");
+        \\ 2 [-]:
+        \\ 3 [t]: pub fn main() void {
+        \\ 4 [t]:     const slide = std.c._dyld_get_image_vmaddr_slide(0);
+        \\ 5 [t]:     std.log.info("slide: {x}", .{slide});
+        \\ 6 [t]:     if (slide <= 0) {
+        \\ 7 [n]:         std.log.info("slide is not set", .{});
+        \\ 8 [-]:     }
+        \\ 9 [t]:     std.log.info("base addr: {x}", .{0x10000000 + std.c._dyld_get_image_vmaddr_slide(0)});
+        \\10 [t]:     std.log.info("Hello, World! {x}", .{&main});
+        \\11 [-]: }
+        \\12 [-]:
+        \\
+    ));
 }

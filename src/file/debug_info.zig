@@ -1,4 +1,5 @@
 const std = @import("std");
+const path = std.fs.path;
 const panic = std.debug.panic;
 const builtin = @import("builtin");
 const native_endian = builtin.cpu.arch.endian();
@@ -14,26 +15,33 @@ const DebugInfo = @This();
 source_files: []core.SourceFile,
 line_info: core.LineInfoMap,
 
-pub fn init(vmaddr_base: usize, exec_file: []const u8) DebugInfo {
-    var temp_arena = std.heap.ArenaAllocator.init(core.gpa);
-    defer temp_arena.deinit();
+pub fn init(exec_file: []const u8, include_mode: core.IncludeMode) DebugInfo {
+    var scratch_arena = std.heap.ArenaAllocator.init(core.gpa);
+    defer scratch_arena.deinit();
+    const scratch = scratch_arena.allocator();
 
-    var source_files_map = std.AutoArrayHashMap(core.SourceFile, core.SourceFileId).init(temp_arena.allocator());
+    var source_files_map = std.AutoArrayHashMap(core.SourceFile, core.SourceFileId).init(scratch);
     var line_info = core.LineInfoMap.init(core.arena);
 
-    var dwarfs = std.ArrayList(Dwarf).init(temp_arena.allocator());
-    const parsed_exec = parseMachoBinary(temp_arena.allocator(), exec_file);
+    var dwarfs = std.ArrayList(Dwarf).init(scratch);
+    const parsed_exec = parseMachoBinary(scratch, exec_file);
+    std.log.debug(".o file count: {d}", .{parsed_exec.o_files.len});
     if (parsed_exec.dwarf) |d| {
         dwarfs.append(d) catch unreachable;
     }
 
     for (parsed_exec.o_files) |o_file| {
-        if (getObjectFileDwarf(temp_arena.allocator(), o_file)) |dwarf| {
+        std.log.debug("Parsing .o file: {s}", .{o_file});
+        if (getObjectFileDwarf(scratch, o_file)) |dwarf| {
             dwarfs.append(dwarf) catch unreachable;
+        } else {
+            std.log.debug("Failed to parse .o file: {s}", .{o_file});
         }
     }
 
-    var filenames_map = std.AutoArrayHashMap(struct { dir: u32, file: u32 }, core.SourceFileId).init(temp_arena.allocator());
+    std.log.debug("DIE count: {d}", .{dwarfs.items.len});
+
+    var filenames_map = std.AutoArrayHashMap(struct { dir: u32, file: u32 }, core.SourceFileId).init(scratch);
     for (dwarfs.items) |*di| {
         for (di.debug_info_entries) |entry| {
             defer filenames_map.clearRetainingCapacity();
@@ -44,13 +52,18 @@ pub fn init(vmaddr_base: usize, exec_file: []const u8) DebugInfo {
             const comp_dir = comp_dir_attr.value.getString(di) catch |err| panic("Cannot retrieve copilation dir value: {}", .{err});
             const comp_dir_id = core.string_interner.intern(comp_dir);
 
-            var prog = di.getLineNumberProgram(temp_arena.allocator(), vmaddr_base + parsed_exec.vmaddr_offset, entry) catch |err|
+            var prog = di.getLineNumberProgram(scratch, parsed_exec.vmaddr_offset, entry) catch |err|
                 panic("Couldnt get line number information: {}", .{err});
 
             while (prog.hasNext()) {
                 const line = prog.next() catch |err| panic("Cannot read line number information: {}", .{err}) orelse continue;
+                if (line.line == 0) continue;
                 // TODO:: is this always line.file - 1 ? or is it DWARF5 (or DWARF4?) thing? i dont remember
                 const file = prog.files.items[line.file - 1];
+                const dir_path = prog.directories.items[file.dir_index].path;
+                if (include_mode == .only_comp_dir and !std.mem.startsWith(u8, dir_path, comp_dir)) {
+                    continue;
+                }
                 const dir = core.string_interner.intern(prog.directories.items[file.dir_index].path);
                 const filename = core.string_interner.intern(file.path);
                 const source_file = source_files_map.getOrPut(.{
@@ -134,7 +147,8 @@ pub fn parseMachoBinary(arena: std.mem.Allocator, filename: []const u8) ParsedEx
                 for (symtab) |sym| {
                     if (sym.stab() and sym.n_type == macho.N_OSO) {
                         const sym_name = std.mem.sliceTo(strtab[sym.n_strx..], 0);
-                        o_files.append(arena, arena.dupe(u8, sym_name) catch unreachable) catch unreachable;
+                        const o_file_path = getOFilepath(arena, filename, sym_name);
+                        o_files.append(arena, o_file_path) catch unreachable;
                     }
                 }
             },
@@ -152,6 +166,21 @@ pub fn parseMachoBinary(arena: std.mem.Allocator, filename: []const u8) ParsedEx
         .o_files = o_files.toOwnedSlice(arena) catch unreachable,
         .dwarf = dwarf,
     };
+}
+
+pub fn getOFilepath(arena: std.mem.Allocator, exec_path: []const u8, sym_name: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, sym_name, "/")) {
+        // FIXME: Fix parsing
+        // OSO name can be like "/Users/ownelek/.cache/zig/o/0c1df40e33f4fc80145a07f5ebcb2c57/libcompiler_rt.a(libcompiler_rt.a.o)"
+        // Do we need to check both files ? not sure whats the format here
+        return arena.dupe(u8, sym_name) catch unreachable;
+    }
+
+    if (path.dirname(exec_path)) |exec_dir| {
+        return path.join(arena, &.{ exec_dir, sym_name }) catch unreachable;
+    }
+
+    return arena.dupe(u8, sym_name) catch unreachable;
 }
 
 pub fn parseDwarfSection(arena: std.mem.Allocator, content: []const u8, sections: *std.EnumArray(Dwarf.SectionId, ?Dwarf.Section), sect: macho.Section64) void {

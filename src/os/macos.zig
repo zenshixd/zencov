@@ -31,13 +31,13 @@ pub fn getPortForPid(pid: PID) platform.MachPort {
 }
 
 pub fn spawnForTracing(args: []const []const u8) PID {
-    var temp_arena = std.heap.ArenaAllocator.init(core.gpa);
-    defer temp_arena.deinit();
-    const temp = temp_arena.allocator();
+    var scratch_arena = std.heap.ArenaAllocator.init(core.gpa);
+    defer scratch_arena.deinit();
+    const scratch = scratch_arena.allocator();
 
-    var argsZ = std.ArrayList(?[*:0]const u8).initCapacity(temp, args.len + 1) catch unreachable;
+    var argsZ = std.ArrayList(?[*:0]const u8).initCapacity(scratch, args.len + 1) catch unreachable;
     for (args) |arg| {
-        argsZ.append(temp.dupeZ(u8, arg) catch unreachable) catch unreachable;
+        argsZ.append(scratch.dupeZ(u8, arg) catch unreachable) catch unreachable;
     }
 
     var attrp = platform.PosixSpawnAttr.init() catch |err| panic("posix_spawnattr_init failed: {}", .{err});
@@ -83,7 +83,7 @@ pub fn setMemoryProtection(pid: PID, addr: []const u8, prot: core.EnumMask(platf
     child_task.protect(addr, false, @bitCast(prot)) catch |err| panic("Cannot set memory protection: {*}, len: {}, prot: {b}, err: {}", .{ addr, addr.len, @as(u8, @bitCast(prot)), err });
 }
 
-pub fn readMemory(pid: PID, T: type, at: [*]u8) T {
+pub fn readMemory(pid: PID, T: type, at: [*]const u8) T {
     var out: T = undefined;
     const child_task = getPortForPid(pid);
     _ = child_task.readMemOverwrite(at, @sizeOf(T), std.mem.asBytes(&out)) catch |err| panic("Cannot read memory {*}, len: {}: {}", .{ at, @sizeOf(T), err });

@@ -14,6 +14,10 @@ pub const gpa = debug_allocator.allocator();
 pub var arena_allocator = std.heap.ArenaAllocator.init(gpa);
 pub const arena = arena_allocator.allocator();
 
+pub const IncludeMode = enum {
+    only_comp_dir,
+    all,
+};
 pub const SourceFileId = enum(u32) {
     _,
 };
@@ -43,7 +47,7 @@ pub const InstructionSize = if (builtin.cpu.arch.isX86()) u8 else u32;
 pub const BRK_OPCODE: InstructionSize = if (builtin.cpu.arch.isX86()) 0xCC else 0xD4200000;
 pub const Breakpoint = struct {
     enabled: bool,
-    addr: [*]u8,
+    addr: [*]const u8,
     original_opcode: InstructionSize,
     triggered: bool,
 };
