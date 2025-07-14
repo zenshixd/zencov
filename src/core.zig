@@ -5,14 +5,21 @@ pub usingnamespace @import("./core/fmt.zig");
 pub usingnamespace @import("./core/meta.zig");
 pub usingnamespace @import("./core/enum_mask.zig");
 
-pub const StringInterner = @import("./core/string_interner.zig");
-pub const StringId = StringInterner.StringId;
+pub const Context = struct {
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    pid: os.PID,
+    breakpoints: BreakpointMap,
 
-pub var debug_allocator = std.heap.DebugAllocator(.{}).init;
-pub const gpa = debug_allocator.allocator();
-
-pub var arena_allocator = std.heap.ArenaAllocator.init(gpa);
-pub const arena = arena_allocator.allocator();
+    pub fn init(gpa: std.mem.Allocator, arena: std.mem.Allocator) Context {
+        return .{
+            .gpa = gpa,
+            .arena = arena,
+            .pid = undefined,
+            .breakpoints = .init(arena),
+        };
+    }
+};
 
 pub const IncludeMode = enum {
     only_comp_dir,
@@ -23,9 +30,21 @@ pub const SourceFileId = enum(u32) {
 };
 
 pub const SourceFile = struct {
-    comp_dir: StringId,
-    dir: StringId,
-    filename: StringId,
+    comp_dir: []const u8,
+    dir: []const u8,
+    filename: []const u8,
+
+    pub const Context = struct {
+        pub fn hash(self: @This(), k: SourceFile) u32 {
+            _ = self;
+            return @truncate(std.hash.Wyhash.hash(0, k.comp_dir) ^ std.hash.Wyhash.hash(0, k.dir) ^ std.hash.Wyhash.hash(0, k.filename));
+        }
+        pub fn eql(self: @This(), a: SourceFile, b: SourceFile, b_index: usize) bool {
+            _ = self;
+            _ = b_index;
+            return std.mem.eql(u8, a.comp_dir, b.comp_dir) and std.mem.eql(u8, a.dir, b.dir) and std.mem.eql(u8, a.filename, b.filename);
+        }
+    };
 };
 
 pub const SourceFileMap = std.AutoArrayHashMap(SourceFile, SourceFileId);
@@ -52,10 +71,6 @@ pub const Breakpoint = struct {
     triggered: bool,
 };
 pub const BreakpointMap = std.AutoArrayHashMap(usize, Breakpoint);
-
-pub var string_interner = StringInterner.init(arena);
-pub var pid: os.PID = undefined;
-pub var breakpoints: BreakpointMap = .init(arena);
 
 pub const os = switch (builtin.os.tag) {
     .macos => @import("./os/macos.zig"),

@@ -1,11 +1,11 @@
-// FIXME: move test code to something like SnapshotHarness
-// FIXME: sometimes test fails because they cant do cleanup???
 const std = @import("std");
+const builtin = @import("builtin");
 const panic = std.debug.panic;
 const assert = std.debug.assert;
 
 const SourceLocation = std.builtin.SourceLocation;
 const Allocator = std.mem.Allocator;
+const SnapshotHarness = @import("snapshot_harness.zig");
 
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
@@ -19,31 +19,31 @@ const SourceShift = struct {
 };
 
 var gpa = std.testing.allocator;
-var source_shifts: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(SourceShift)) = .empty;
+var source_shifts: std.StringHashMap(std.ArrayList(SourceShift)) = .init(std.heap.page_allocator);
 var snapshots_updated: u32 = 0;
+
+pub fn deinit() void {
+    var it = source_shifts.iterator();
+    while (it.next()) |entry| {
+        entry.value_ptr.clearAndFree();
+    }
+    source_shifts.clearAndFree();
+}
 
 source_location: SourceLocation,
 text: []const u8,
 should_update: bool = false,
 
-pub fn deinitGlobals(allocator: Allocator) void {
-    var it = source_shifts.iterator();
-    while (it.next()) |entry| {
-        entry.value_ptr.clearAndFree(allocator);
-    }
-    source_shifts.clearAndFree(allocator);
-}
-
 pub fn getSnapshotsUpdated() u32 {
     return snapshots_updated;
 }
 
-pub fn openSourceDir() std.fs.Dir.OpenError!std.fs.Dir {
+pub fn getSourceDir() std.fs.Dir.OpenError!std.fs.Dir {
     return std.fs.cwd().openDir("src/", .{});
 }
 
 pub fn getSourceFile(self: Snapshot, allocator: Allocator) []const u8 {
-    var dir = openSourceDir() catch |err| panic("Cannot open source dir: {}", .{err});
+    var dir = getSourceDir() catch |err| panic("Cannot open source dir: {}", .{err});
     defer dir.close();
 
     var file = dir.openFileZ(self.source_location.file, .{}) catch |err| panic("Cannot open source file {s}: {}", .{ self.source_location.file, err });
@@ -74,7 +74,7 @@ pub fn getSourceFileParts(self: Snapshot, content: []const u8) error{SnapshotNot
         switch (state) {
             .begin => {
                 if (line_num == snapshot_begin_line) {
-                    begin_end_idx = it.index.?;
+                    begin_end_idx = it.index orelse panic("reached end of file, content: {s}", .{content});
                     state = .snapshot;
                 }
             },
@@ -134,7 +134,7 @@ pub fn getSnapshotBeginLine(self: Snapshot) u32 {
     return self.source_location.line;
 }
 
-pub fn writeNewSnapshot(self: Snapshot, allocator: Allocator, writer: anytype, parts: SourceFileParts, new_snapshot: []const u8) void {
+pub fn writeNewSnapshot(self: Snapshot, writer: anytype, parts: SourceFileParts, new_snapshot: []const u8) void {
     const old_snapshot_line_count: i32 = @intCast(std.mem.count(u8, parts.snapshot, "\n"));
     var new_snapshot_line_count: i32 = 0;
     var it = std.mem.splitScalar(u8, new_snapshot, '\n');
@@ -151,8 +151,8 @@ pub fn writeNewSnapshot(self: Snapshot, allocator: Allocator, writer: anytype, p
 
     const line_shift: i32 = new_snapshot_line_count - old_snapshot_line_count;
     if (line_shift != 0) {
-        const result = source_shifts.getOrPutValue(allocator, self.source_location.file, .empty) catch unreachable;
-        result.value_ptr.append(allocator, .{
+        const result = source_shifts.getOrPutValue(self.source_location.file, .init(std.heap.page_allocator)) catch unreachable;
+        result.value_ptr.append(.{
             .line_num = parts.snapshot_end_line,
             .line_shift = line_shift,
         }) catch unreachable;
@@ -160,7 +160,7 @@ pub fn writeNewSnapshot(self: Snapshot, allocator: Allocator, writer: anytype, p
 }
 
 pub fn updateSourceFile(self: Snapshot, new_text: []const u8) void {
-    var dir = openSourceDir() catch |err| panic("Cannot open source dir: {}", .{err});
+    var dir = getSourceDir() catch |err| panic("Cannot open source dir: {}", .{err});
     defer dir.close();
 
     var file = dir.createFile(self.source_location.file, .{}) catch |err| panic("Cannot open source file {s}: {}", .{ self.source_location.file, err });
@@ -201,7 +201,7 @@ pub fn update(self: Snapshot, new_text: []const u8) error{SnapshotNotFound}!void
     const parts = try self.getSourceFileParts(content);
 
     new_file_content.appendSlice(parts.beginning) catch unreachable;
-    self.writeNewSnapshot(gpa, new_file_content.writer(), parts, new_text);
+    self.writeNewSnapshot(new_file_content.writer(), parts, new_text);
     new_file_content.appendSlice(parts.ending) catch unreachable;
 
     self.updateSourceFile(new_file_content.items);
@@ -236,163 +236,62 @@ pub fn expectSnapshotMatchString(received: []const u8, expected: Snapshot) error
     };
 }
 
-fn testSnapshotText(text: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).init(gpa);
-    const writer = result.writer();
-
-    try writer.writeAll("snap(@src(),\n");
-    var it = std.mem.splitScalar(u8, text, '\n');
-    while (it.next()) |line| {
-        try writer.writeAll("    \\\\");
-        try writer.writeAll(line);
-        try writer.writeAll("\n");
-    }
-    try writer.writeAll(");\n");
-
-    return result.toOwnedSlice();
-}
-
-const test_file_path = "tests/$$test_file.zig";
-fn testSetupFile(snapshot_text: []const u8, file_text: []const u8) !Snapshot {
-    var dir = try std.fs.cwd().openDir("src/", .{});
-    defer dir.close();
-
-    const file = try dir.createFile(test_file_path, .{});
-    defer file.close();
-
-    try file.writeAll(file_text);
-
-    return Snapshot{
-        .source_location = .{ .file = test_file_path, .line = 1, .column = 1, .fn_name = "", .module = "" },
-        .text = snapshot_text,
-        .should_update = false,
-    };
-}
-
-fn testReadFile() ![]const u8 {
-    var dir = try openSourceDir();
-    defer dir.close();
-
-    const file = try dir.openFile(test_file_path, .{});
-    defer file.close();
-
-    return file.readToEndAlloc(gpa, std.math.maxInt(u32));
-}
-
-fn testDumpFile() !void {
-    const content = try testReadFile();
-    defer gpa.free(content);
-    std.debug.print("content:\n{s}\n", .{content});
-}
-
-fn testDeleteFile(path: []const u8) !void {
-    var dir = try std.fs.cwd().openDir("src/", .{});
-    defer dir.close();
-
-    try dir.deleteFile(path);
-}
-
-fn testSnapshots(snapshot_text: []const u8, Expect: anytype) !void {
-    const text = try testSnapshotText(snapshot_text);
-    defer gpa.free(text);
-
-    try testSnapshotsExtra(snapshot_text, text, Expect);
-}
-
-fn testSnapshotsExtra(snapshot_text: []const u8, file_content: []const u8, Expect: anytype) !void {
-    const snapshot = try testSetupFile(snapshot_text, file_content);
-    defer testDeleteFile(snapshot.source_location.file) catch @panic("couldnt delete file");
-
-    try Expect.run(snapshot);
-    deinitGlobals(gpa);
-}
-
-fn testMultipleSnapshots(snapshots_texts: []const []const u8, Expect: anytype) !void {
-    var dir = try std.fs.cwd().openDir("src/", .{});
-    defer dir.close();
-    defer testDeleteFile(test_file_path) catch @panic("couldnt delete file");
-
-    const file = try dir.createFile(test_file_path, .{});
-    defer file.close();
-
-    var snapshots = std.ArrayList(Snapshot).init(gpa);
-    defer snapshots.deinit();
-
-    var line_num: u32 = 1;
-    for (snapshots_texts) |snapshot_text| {
-        const file_content = try testSnapshotText(snapshot_text);
-        defer gpa.free(file_content);
-
-        try file.writeAll(file_content);
-        try snapshots.append(.{
-            .source_location = .{ .file = test_file_path, .line = line_num, .column = 1, .fn_name = "", .module = "" },
-            .text = snapshot_text,
-        });
-
-        line_num += @intCast(std.mem.count(u8, file_content, "\n"));
-    }
-
-    try Expect.run(snapshots.items);
-    deinitGlobals(gpa);
-}
-
 test "should return void if snapshot matches" {
     const snapshot_text = "\"hello world\"";
 
-    try testSnapshots(snapshot_text, struct {
-        fn run(snapshot: Snapshot) !void {
-            try expectSnapshotMatchString("\"hello world\"", snapshot);
-        }
-    });
+    var h = SnapshotHarness.init(snapshot_text);
+    defer h.deinit();
+
+    try expectSnapshotMatchString("\"hello world\"", h.snapshots[0]);
 }
 
 test "should return error if snapshot is mismatched" {
     const snapshot_text = "hello world";
-    try testSnapshots(snapshot_text, struct {
-        fn run(snapshot: Snapshot) !void {
-            const result = snapshot.diff("hello worlds");
 
-            try expectError(error.SnapshotMismatch, result);
-        }
-    });
+    var h = SnapshotHarness.init(snapshot_text);
+    defer h.deinit();
+
+    const result = h.snapshots[0].diff("hello worlds");
+
+    if (h.snapshots[0].should_update) {
+        try result;
+    } else {
+        try expectError(error.SnapshotMismatch, result);
+    }
 }
 
-test "should return error if snapshot is not found" {
+test "should return error if snapshot is not found when trying to update" {
     const file_content =
         \\snap(@src(), "hello world");
         \\
     ;
 
-    try testSnapshotsExtra("hello world", file_content, struct {
-        fn run(snapshot: Snapshot) !void {
-            const result = snapshot.update("hello worlds");
+    var h = SnapshotHarness.init("");
+    defer h.deinit();
+    h.updateTestFile(file_content);
 
-            try expectError(error.SnapshotNotFound, result);
-        }
-    });
+    const result = h.snapshots[0].update("hello worlds");
+
+    try expectError(error.SnapshotNotFound, result);
 }
 
 test "should update single line snapshot" {
     const snapshot_text =
         \\1
     ;
-    try testSnapshots(snapshot_text, struct {
-        fn run(snapshot: Snapshot) !void {
-            try snapshot.update(
-                \\2
-            );
 
-            const content = try testReadFile();
-            defer gpa.free(content);
+    var h = SnapshotHarness.init(snapshot_text);
+    defer h.deinit();
 
-            try expectEqualStrings(
-                \\snap(@src(),
-                \\    \\2
-                \\);
-                \\
-            , content);
-        }
-    });
+    try h.snapshots[0].update(
+        \\2
+    );
+    try h.expectTestFileEqual(
+        \\snap(@src(),
+        \\    \\2
+        \\);
+        \\
+    );
 }
 
 test "should update multiline snapshot" {
@@ -401,31 +300,27 @@ test "should update multiline snapshot" {
         \\2
         \\3
     ;
-    try testSnapshots(snapshot_text, struct {
-        fn run(snapshot: Snapshot) !void {
-            try snapshot.update(
-                \\1
-                \\2
-                \\3
-                \\4
-                \\5
-            );
 
-            const content = try testReadFile();
-            defer gpa.free(content);
+    var h = SnapshotHarness.init(snapshot_text);
+    defer h.deinit();
+    try h.snapshots[0].update(
+        \\1
+        \\2
+        \\3
+        \\4
+        \\5
+    );
 
-            try expectEqualStrings(
-                \\snap(@src(),
-                \\    \\1
-                \\    \\2
-                \\    \\3
-                \\    \\4
-                \\    \\5
-                \\);
-                \\
-            , content);
-        }
-    });
+    try h.expectTestFileEqual(
+        \\snap(@src(),
+        \\    \\1
+        \\    \\2
+        \\    \\3
+        \\    \\4
+        \\    \\5
+        \\);
+        \\
+    );
 }
 
 test "should update multiple snapshots" {
@@ -436,33 +331,29 @@ test "should update multiple snapshots" {
         \\21
     ;
 
-    try testMultipleSnapshots(&[_][]const u8{ snapshot_text1, snapshot_text2 }, struct {
-        fn run(snapshots: []Snapshot) !void {
-            try snapshots[0].update(
-                \\11
-                \\12
-            );
-            try snapshots[1].update(
-                \\21
-                \\22
-            );
+    var h = SnapshotHarness.initMultiple(&.{ snapshot_text1, snapshot_text2 });
+    defer h.deinit();
 
-            const content = try testReadFile();
-            defer gpa.free(content);
+    try h.snapshots[0].update(
+        \\11
+        \\12
+    );
+    try h.snapshots[1].update(
+        \\21
+        \\22
+    );
 
-            try expectEqualStrings(
-                \\snap(@src(),
-                \\    \\11
-                \\    \\12
-                \\);
-                \\snap(@src(),
-                \\    \\21
-                \\    \\22
-                \\);
-                \\
-            , content);
-        }
-    });
+    try h.expectTestFileEqual(
+        \\snap(@src(),
+        \\    \\11
+        \\    \\12
+        \\);
+        \\snap(@src(),
+        \\    \\21
+        \\    \\22
+        \\);
+        \\
+    );
 }
 
 test "should update multiple multiline snapshots" {
@@ -500,42 +391,38 @@ test "should update multiple multiline snapshots" {
         ,
     };
 
-    try testMultipleSnapshots(&snapshot_texts, struct {
-        fn run(snapshots: []Snapshot) !void {
-            for (snapshots, 0..) |snapshot, i| {
-                try snapshot.update(updated_texts[i]);
-            }
+    var h = SnapshotHarness.initMultiple(&snapshot_texts);
+    defer h.deinit();
 
-            const content = try testReadFile();
-            defer gpa.free(content);
+    for (h.snapshots, 0..) |snapshot, i| {
+        try snapshot.update(updated_texts[i]);
+    }
 
-            try expectEqualStrings(
-                \\snap(@src(),
-                \\    \\11
-                \\    \\12
-                \\    \\13
-                \\    \\14
-                \\);
-                \\snap(@src(),
-                \\    \\21
-                \\    \\22
-                \\    \\23
-                \\    \\24
-                \\);
-                \\snap(@src(),
-                \\    \\31
-                \\    \\32
-                \\    \\33
-                \\    \\34
-                \\);
-                \\snap(@src(),
-                \\    \\41
-                \\    \\42
-                \\    \\43
-                \\    \\44
-                \\);
-                \\
-            , content);
-        }
-    });
+    try h.expectTestFileEqual(
+        \\snap(@src(),
+        \\    \\11
+        \\    \\12
+        \\    \\13
+        \\    \\14
+        \\);
+        \\snap(@src(),
+        \\    \\21
+        \\    \\22
+        \\    \\23
+        \\    \\24
+        \\);
+        \\snap(@src(),
+        \\    \\31
+        \\    \\32
+        \\    \\33
+        \\    \\34
+        \\);
+        \\snap(@src(),
+        \\    \\41
+        \\    \\42
+        \\    \\43
+        \\    \\44
+        \\);
+        \\
+    );
 }

@@ -15,13 +15,13 @@ const DebugInfo = @This();
 source_files: []core.SourceFile,
 line_info: core.LineInfoMap,
 
-pub fn init(exec_file: []const u8, include_mode: core.IncludeMode) DebugInfo {
-    var scratch_arena = std.heap.ArenaAllocator.init(core.gpa);
+pub fn init(ctx: *core.Context, exec_file: []const u8, include_mode: core.IncludeMode) DebugInfo {
+    var scratch_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer scratch_arena.deinit();
     const scratch = scratch_arena.allocator();
 
-    var source_files_map = std.AutoArrayHashMap(core.SourceFile, core.SourceFileId).init(scratch);
-    var line_info = core.LineInfoMap.init(core.arena);
+    var source_files_map = std.ArrayHashMap(core.SourceFile, core.SourceFileId, core.SourceFile.Context, false).init(scratch);
+    var line_info = core.LineInfoMap.init(ctx.arena);
 
     var dwarfs = std.ArrayList(Dwarf).init(scratch);
     const parsed_exec = parseMachoBinary(scratch, exec_file);
@@ -50,7 +50,6 @@ pub fn init(exec_file: []const u8, include_mode: core.IncludeMode) DebugInfo {
 
             const comp_dir_attr = entry.getAttr(DW.AT.comp_dir) orelse panic("Cannot retrieve compilation directory", .{});
             const comp_dir = comp_dir_attr.value.getString(di) catch |err| panic("Cannot retrieve copilation dir value: {}", .{err});
-            const comp_dir_id = core.string_interner.intern(comp_dir);
 
             var prog = di.getLineNumberProgram(scratch, parsed_exec.vmaddr_offset, entry) catch |err|
                 panic("Couldnt get line number information: {}", .{err});
@@ -64,25 +63,28 @@ pub fn init(exec_file: []const u8, include_mode: core.IncludeMode) DebugInfo {
                 if (include_mode == .only_comp_dir and !std.mem.startsWith(u8, dir_path, comp_dir)) {
                     continue;
                 }
-                const dir = core.string_interner.intern(prog.directories.items[file.dir_index].path);
-                const filename = core.string_interner.intern(file.path);
-                const source_file = source_files_map.getOrPut(.{
-                    .comp_dir = comp_dir_id,
-                    .dir = dir,
-                    .filename = filename,
-                }) catch unreachable;
+                const dir = prog.directories.items[file.dir_index].path;
+                const source_file_id = id: {
+                    if (source_files_map.get(.{ .comp_dir = comp_dir, .dir = dir, .filename = file.path })) |id| {
+                        break :id id;
+                    }
 
-                if (!source_file.found_existing) {
-                    source_file.value_ptr.* = @enumFromInt(source_files_map.count() - 1);
-                }
+                    const new_source_file_id: core.SourceFileId = @enumFromInt(source_files_map.count());
+                    source_files_map.put(.{
+                        .comp_dir = ctx.arena.dupe(u8, comp_dir) catch unreachable,
+                        .dir = ctx.arena.dupe(u8, dir) catch unreachable,
+                        .filename = ctx.arena.dupe(u8, file.path) catch unreachable,
+                    }, new_source_file_id) catch unreachable;
+                    break :id new_source_file_id;
+                };
 
                 const result = line_info.getOrPut(.{
-                    .source_file = source_file.value_ptr.*,
+                    .source_file = source_file_id,
                     .line = @intCast(line.line),
                 }) catch unreachable;
                 if (!result.found_existing) {
                     result.value_ptr.* = .{
-                        .source_file = source_file.value_ptr.*,
+                        .source_file = source_file_id,
                         .line = @intCast(line.line),
                         .col = @intCast(line.col),
                         .address = line.address,
@@ -92,11 +94,7 @@ pub fn init(exec_file: []const u8, include_mode: core.IncludeMode) DebugInfo {
         }
     }
 
-    // We are not going to be interning files later, so we swapping to array is better
-    const source_files = core.arena.alloc(core.SourceFile, source_files_map.count()) catch unreachable;
-    for (source_files_map.keys(), 0..) |key, i| {
-        source_files[i] = key;
-    }
+    const source_files = ctx.arena.dupe(core.SourceFile, source_files_map.keys()) catch unreachable;
     return .{
         .source_files = source_files,
         .line_info = line_info,
@@ -109,10 +107,9 @@ pub const ParsedExec = struct {
     dwarf: ?Dwarf,
 };
 
-pub fn parseMachoBinary(arena: std.mem.Allocator, filename: []const u8) ParsedExec {
+pub fn parseMachoBinary(scratch: std.mem.Allocator, filename: []const u8) ParsedExec {
     const file = std.fs.cwd().openFile(filename, .{}) catch |err| panic("Cannot open file {s}: {}", .{ filename, err });
-    const content = file.readToEndAlloc(core.gpa, std.math.maxInt(u32)) catch |err| panic("Cannot load file {s}: {}", .{ filename, err });
-    defer core.gpa.free(content);
+    const content = file.readToEndAlloc(scratch, std.math.maxInt(u32)) catch |err| panic("Cannot load file {s}: {}", .{ filename, err });
 
     const header = std.mem.bytesToValue(macho.MachOHeader64, content);
     if (header.magic != macho.MH_MAGIC_64) {
@@ -124,7 +121,7 @@ pub fn parseMachoBinary(arena: std.mem.Allocator, filename: []const u8) ParsedEx
         .buf = content[@sizeOf(macho.MachOHeader64)..],
     };
 
-    var o_files = std.ArrayListUnmanaged([]const u8).empty;
+    var o_files = std.ArrayList([]const u8).init(scratch);
     var vmaddr_base: ?usize = null;
     var sections = std.EnumArray(Dwarf.SectionId, ?Dwarf.Section).initFill(null);
     while (it.next()) |*lc| {
@@ -136,7 +133,7 @@ pub fn parseMachoBinary(arena: std.mem.Allocator, filename: []const u8) ParsedEx
                     }
 
                     if (std.mem.eql(u8, "__DWARF", sect.segName())) {
-                        parseDwarfSection(arena, content, &sections, sect);
+                        parseDwarfSection(scratch, content, &sections, sect);
                     }
                 }
             },
@@ -147,8 +144,8 @@ pub fn parseMachoBinary(arena: std.mem.Allocator, filename: []const u8) ParsedEx
                 for (symtab) |sym| {
                     if (sym.stab() and sym.n_type == macho.N_OSO) {
                         const sym_name = std.mem.sliceTo(strtab[sym.n_strx..], 0);
-                        const o_file_path = getOFilepath(arena, filename, sym_name);
-                        o_files.append(arena, o_file_path) catch unreachable;
+                        const o_file_path = getOFilepath(scratch, filename, sym_name);
+                        o_files.append(o_file_path) catch unreachable;
                     }
                 }
             },
@@ -156,34 +153,34 @@ pub fn parseMachoBinary(arena: std.mem.Allocator, filename: []const u8) ParsedEx
         }
     }
 
-    const dwarf = Dwarf.init(arena, sections) catch |err| switch (err) {
+    const dwarf = Dwarf.init(scratch, sections) catch |err| switch (err) {
         error.NoDebugInfoSection, error.NoDebugAbbrevSection => null,
         else => panic("Cannot parse dwarf info: {}", .{err}),
     };
 
     return ParsedExec{
         .vmaddr_offset = vmaddr_base orelse panic("Failed to retrieve vmaddr_base", .{}),
-        .o_files = o_files.toOwnedSlice(arena) catch unreachable,
+        .o_files = o_files.toOwnedSlice() catch unreachable,
         .dwarf = dwarf,
     };
 }
 
-pub fn getOFilepath(arena: std.mem.Allocator, exec_path: []const u8, sym_name: []const u8) []const u8 {
+pub fn getOFilepath(scratch: std.mem.Allocator, exec_path: []const u8, sym_name: []const u8) []const u8 {
     if (std.mem.startsWith(u8, sym_name, "/")) {
         // FIXME: Fix parsing
         // OSO name can be like "/Users/ownelek/.cache/zig/o/0c1df40e33f4fc80145a07f5ebcb2c57/libcompiler_rt.a(libcompiler_rt.a.o)"
         // Do we need to check both files ? not sure whats the format here
-        return arena.dupe(u8, sym_name) catch unreachable;
+        return scratch.dupe(u8, sym_name) catch unreachable;
     }
 
     if (path.dirname(exec_path)) |exec_dir| {
-        return path.join(arena, &.{ exec_dir, sym_name }) catch unreachable;
+        return path.join(scratch, &.{ exec_dir, sym_name }) catch unreachable;
     }
 
-    return arena.dupe(u8, sym_name) catch unreachable;
+    return scratch.dupe(u8, sym_name) catch unreachable;
 }
 
-pub fn parseDwarfSection(arena: std.mem.Allocator, content: []const u8, sections: *std.EnumArray(Dwarf.SectionId, ?Dwarf.Section), sect: macho.Section64) void {
+pub fn parseDwarfSection(scratch: std.mem.Allocator, content: []const u8, sections: *std.EnumArray(Dwarf.SectionId, ?Dwarf.Section), sect: macho.Section64) void {
     var section_index: ?usize = null;
     inline for (@typeInfo(Dwarf.SectionId).@"enum".fields, 0..) |section, i| {
         if (std.mem.eql(u8, "__" ++ section.name, sect.sectName())) section_index = i;
@@ -194,18 +191,17 @@ pub fn parseDwarfSection(arena: std.mem.Allocator, content: []const u8, sections
 
     const section_bytes = content[sect.offset..][0..sect.size];
     sections.set(@enumFromInt(section_index.?), Dwarf.Section{
-        .data = arena.dupeZ(u8, section_bytes) catch unreachable,
+        .data = scratch.dupeZ(u8, section_bytes) catch unreachable,
     });
 }
 
-fn getObjectFileDwarf(arena: std.mem.Allocator, o_file: []const u8) ?Dwarf {
+fn getObjectFileDwarf(scratch: std.mem.Allocator, o_file: []const u8) ?Dwarf {
     var sections = std.EnumArray(SectionId, ?Section).initUndefined();
     const file = std.fs.cwd().openFile(o_file, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => panic("Cannot open object file {s}: {}", .{ o_file, err }),
     };
-    const content = file.readToEndAlloc(core.gpa, std.math.maxInt(u32)) catch |err| panic("Cannot read object file: {s}: {}", .{ o_file, err });
-    defer core.gpa.free(content);
+    const content = file.readToEndAlloc(scratch, std.math.maxInt(u32)) catch |err| panic("Cannot read object file: {s}: {}", .{ o_file, err });
 
     const header = std.mem.bytesToValue(macho.MachOHeader64, content);
     var it = macho.LoadCommandIterator{
@@ -219,14 +215,14 @@ fn getObjectFileDwarf(arena: std.mem.Allocator, o_file: []const u8) ?Dwarf {
                 for (lc.getSections()) |sect| {
                     if (!std.mem.eql(u8, "__DWARF", sect.segName())) continue;
 
-                    parseDwarfSection(arena, content, &sections, sect);
+                    parseDwarfSection(scratch, content, &sections, sect);
                 }
             },
             else => {},
         }
     }
 
-    return Dwarf.init(arena, sections) catch |err| switch (err) {
+    return Dwarf.init(scratch, sections) catch |err| switch (err) {
         error.NoDebugInfoSection, error.NoDebugAbbrevSection => null,
         else => panic("Failed to read DWARF info: {}", .{err}),
     };

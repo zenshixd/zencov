@@ -11,27 +11,26 @@ const LineInfoHashMap = @import("../file/debug_info.zig").LineInfoHashMap;
 pub const PID = platform.PosixPID;
 pub const Breakpoint = core.Breakpoint;
 
-var pid_port_map: std.AutoArrayHashMap(PID, platform.MachPort) = .init(core.arena);
+var child_process_port: ?platform.MachPort = null;
 var exception_port: platform.MachPort = undefined;
-var breakpoint_handler: *const fn (pc: usize) bool = undefined;
+var breakpoint_handler: *const fn (ctx: *core.Context, pc: usize) bool = undefined;
 
 pub fn getPortForPid(pid: PID) platform.MachPort {
     if (pid == PID.current) {
         return platform.taskSelf();
     }
 
-    const result = pid_port_map.getOrPut(pid) catch unreachable;
-    if (result.found_existing) {
-        return result.value_ptr.*;
+    if (child_process_port) |port| {
+        return port;
     }
 
     const port = platform.taskSelf().taskForPid(pid) catch |err| panic("Cannot get child task for pid {}: {}", .{ pid, err });
-    result.value_ptr.* = port;
+    child_process_port = port;
     return port;
 }
 
-pub fn spawnForTracing(args: []const []const u8) PID {
-    var scratch_arena = std.heap.ArenaAllocator.init(core.gpa);
+pub fn spawnForTracing(ctx: *core.Context, args: []const []const u8) PID {
+    var scratch_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer scratch_arena.deinit();
     const scratch = scratch_arena.allocator();
 
@@ -67,7 +66,7 @@ pub fn getMemoryRegion(pid: PID, address: usize) []const u8 {
     return @as([*]const u8, @ptrFromInt(result.address))[0..result.size];
 }
 
-pub fn setupBreakpointHandler(pid: PID, handler: *const fn (pc: usize) bool) void {
+pub fn setupBreakpointHandler(pid: PID, handler: *const fn (ctx: *core.Context, pc: usize) bool) void {
     const child_task: platform.MachPort = getPortForPid(pid);
     exception_port = platform.taskSelf().portAllocate(platform.MachPortRight.RECEIVE) catch |err| panic("Cannot allocate exception port: {}", .{err});
     platform.taskSelf().portInsertRight(exception_port, exception_port, platform.MachMsgType.MAKE_SEND) catch |err| panic("Cannot insert exception port: {}", .{err});
@@ -95,10 +94,10 @@ pub fn writeMemory(pid: PID, addr: []const u8, data: []const u8) void {
     child_task.writeMem(addr.ptr, data) catch |err| panic("Cannot write memory {*}, len: {}: {}", .{ addr, data.len, err });
 }
 
-pub fn waitForPid(pid: PID) void {
+pub fn waitForPid(ctx: *core.Context) void {
     while (true) {
-        std.log.debug("waitForPid: {}", .{pid});
-        const status = pid.wait(platform.W.NOHANG) catch |err| panic("Cannot wait for pid {}: {}", .{ pid, err });
+        std.log.debug("waitForPid: {}", .{ctx.pid});
+        const status = ctx.pid.wait(platform.W.NOHANG) catch |err| panic("Cannot wait for pid {}: {}", .{ ctx.pid, err });
         if (status.IFEXITED()) {
             break;
         }
@@ -109,7 +108,7 @@ pub fn waitForPid(pid: PID) void {
         };
         std.log.debug("[mach] received message: {}", .{request.header});
 
-        var reply = machMsgHandler(request);
+        var reply = machMsgHandler(ctx, request);
 
         std.log.debug("[mach] message handled, responding with: {}", .{reply.header});
         exception_port.sendMessage(&reply, 0, platform.MachPort.none) catch |err|
@@ -117,7 +116,7 @@ pub fn waitForPid(pid: PID) void {
     }
 }
 
-fn machMsgHandler(msg: platform.MachMsgRequest) platform.MachMsgReply {
+fn machMsgHandler(ctx: *core.Context, msg: platform.MachMsgRequest) platform.MachMsgReply {
     std.log.debug("machMsgHandler: msg.header.id: {d}", .{@intFromEnum(msg.header.id)});
     var reply = platform.MachMsgReply{
         .header = .{
@@ -137,7 +136,7 @@ fn machMsgHandler(msg: platform.MachMsgRequest) platform.MachMsgReply {
             const ts = req.thread.name.threadGetState(.ARM64) catch |err| panic("Cannot get thread state: {}", .{err});
             std.log.debug("Thread state: {}", .{ts.arm64});
 
-            reply.exception_raise.RetCode = if (breakpoint_handler(ts.arm64.pc)) platform.MachKernelReturn.Success else platform.MachKernelReturn.Failure;
+            reply.exception_raise.RetCode = if (breakpoint_handler(ctx, ts.arm64.pc)) platform.MachKernelReturn.Success else platform.MachKernelReturn.Failure;
             reply.exception_raise.NDR = platform.NDR_record.default;
             reply.header.size = @sizeOf(@TypeOf(reply.exception_raise));
 

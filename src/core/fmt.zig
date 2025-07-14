@@ -38,9 +38,9 @@ pub const SourceFilepathFmt = struct {
     pub fn format(self: SourceFilepathFmt, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
-        const comp_dir = core.string_interner.lookup(self.source_file.comp_dir).?;
-        const filename = core.string_interner.lookup(self.source_file.filename).?;
-        const dir = core.string_interner.lookup(self.source_file.dir).?;
+        const comp_dir = self.source_file.comp_dir;
+        const filename = self.source_file.filename;
+        const dir = self.source_file.dir;
         const display_dir = std.mem.trimLeft(u8, dir, comp_dir);
         if (display_dir.len > 0) {
             try writer.writeAll(display_dir);

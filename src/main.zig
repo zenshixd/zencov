@@ -20,24 +20,26 @@ const cov = @import("coverage.zig");
 const TestBed = @import("test/test_bed.zig");
 const snap = @import("test/snapshots.zig").snap;
 
-pub fn main() !void {
+pub fn main() void {
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    var arena_allocator = std.heap.ArenaAllocator.init(debug_allocator.allocator());
     defer {
-        // In Release mode this will get cleaned up by OS anyway
         if (builtin.mode == .Debug) {
-            core.arena_allocator.deinit();
+            arena_allocator.deinit();
         }
-
-        // Check for leaks
-        _ = core.debug_allocator.deinit();
     }
-    const args = try std.process.argsAlloc(core.arena);
 
+    var ctx = core.Context.init(debug_allocator.allocator(), arena_allocator.allocator());
+
+    const args = std.process.argsAlloc(ctx.arena) catch unreachable;
     const tracee_cmd = args[1..];
-    const debug_info = DebugInfo.init(tracee_cmd[0], .only_comp_dir);
-    bp.runInstrumentedAndWait(tracee_cmd, &debug_info);
-    const coverage_info = cov.getCoverageInfo(&debug_info);
-    report.generateReport(tracee_cmd, debug_info.source_files, coverage_info);
+    const debug_info = DebugInfo.init(&ctx, tracee_cmd[0], .only_comp_dir);
+    bp.runInstrumentedAndWait(&ctx, tracee_cmd, &debug_info);
+    const coverage_info = cov.getCoverageInfo(&ctx, &debug_info);
+    report.generateReport(&ctx, tracee_cmd, debug_info.source_files, coverage_info);
 }
+
 pub const std_options: std.Options = .{
     .log_level = if (builtin.mode == .Debug) .debug else .info,
     .logFn = covLog,
@@ -75,19 +77,19 @@ test "basic" {
     defer t.deinit();
 
     try t.expectCoverageInfo(snap(@src(),
+        \\Command: zig-out/bin/basic
         \\File: /Users/ownelek/Projects/zencov/tests/basic/basic.zig
+        \\Line coverage: 4/5
         \\ 1 [-]: const std = @import("std");
-        \\ 2 [-]:
+        \\ 2 [-]: 
         \\ 3 [t]: pub fn main() void {
-        \\ 4 [t]:     const slide = std.c._dyld_get_image_vmaddr_slide(0);
-        \\ 5 [t]:     std.log.info("slide: {x}", .{slide});
-        \\ 6 [t]:     if (slide <= 0) {
-        \\ 7 [n]:         std.log.info("slide is not set", .{});
-        \\ 8 [-]:     }
-        \\ 9 [t]:     std.log.info("base addr: {x}", .{0x10000000 + std.c._dyld_get_image_vmaddr_slide(0)});
-        \\10 [t]:     std.log.info("Hello, World! {x}", .{&main});
-        \\11 [-]: }
-        \\12 [-]:
+        \\ 4 [t]:     var slide = std.c._dyld_get_image_vmaddr_slide(0);
+        \\ 5 [t]:     if (slide <= 0) {
+        \\ 6 [n]:         slide = 0;
+        \\ 7 [-]:     }
+        \\ 8 [t]:     slide += 1;
+        \\ 9 [-]: }
+        \\10 [-]: 
         \\
     ));
 }

@@ -14,21 +14,19 @@ const CSS_DEST_FILE = "index.css";
 pub const Subdir = struct {
     source_dir: std.fs.Dir,
     report_dir: std.fs.Dir,
-    files: std.ArrayList(core.StringId),
+    files: std.ArrayList([]const u8),
 };
-pub fn generateReport(command: []const []const u8, source_files: []core.SourceFile, coverage_info: cov.CoverageInfo) void {
-    var subdirs = std.StringHashMap(Subdir).init(core.gpa);
+pub fn generateReport(ctx: *core.Context, command: []const []const u8, source_files: []core.SourceFile, coverage_info: cov.CoverageInfo) void {
+    var subdirs = std.StringHashMap(Subdir).init(ctx.arena);
     defer {
         var it = subdirs.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.source_dir.close();
             entry.value_ptr.report_dir.close();
-            entry.value_ptr.files.deinit();
         }
-        subdirs.deinit();
     }
 
-    var scratch_arena = std.heap.ArenaAllocator.init(core.gpa);
+    var scratch_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer scratch_arena.deinit();
     const scratch = scratch_arena.allocator();
 
@@ -42,10 +40,10 @@ pub fn generateReport(command: []const []const u8, source_files: []core.SourceFi
         defer _ = scratch_arena.reset(.retain_capacity);
 
         const source_file = source_files[id];
-        const source_dirpath = core.string_interner.lookup(source_file.dir).?;
-        const source_filename = core.string_interner.lookup(source_file.filename).?;
+        const source_dirpath = source_file.dir;
+        const source_filename = source_file.filename;
 
-        const comp_dir = core.string_interner.lookup(source_file.comp_dir).?;
+        const comp_dir = source_file.comp_dir;
         const source_reldirpath = std.mem.trimLeft(u8, source_dirpath, comp_dir);
         const report_dirpath = path.join(scratch, &.{ OUT_DIR, source_reldirpath }) catch unreachable;
         const css_dir = std.fs.path.relative(scratch, report_dirpath, OUT_DIR) catch unreachable;
@@ -59,7 +57,7 @@ pub fn generateReport(command: []const []const u8, source_files: []core.SourceFi
             subdir.value_ptr.* = .{
                 .source_dir = source_dir,
                 .report_dir = report_dir,
-                .files = std.ArrayList(core.StringId).init(core.arena),
+                .files = std.ArrayList([]const u8).init(ctx.arena),
             };
         }
         subdir.value_ptr.files.append(source_file.filename) catch unreachable;
@@ -117,26 +115,15 @@ pub const SourceFileReport = struct {
         _ = fmt;
         _ = options;
 
-        var covered: f32 = 0;
-        var total_executable: f32 = 0;
-
-        var it = self.coverage_info.line_info.iterator();
-        while (it.next()) |entry| {
-            if (entry.key_ptr.source_file == self.source_id) {
-                if (entry.value_ptr.* == .triggered) {
-                    covered += 1;
-                }
-                total_executable += 1;
-            }
-        }
-
+        const covered_lines: f32 = @floatFromInt(self.coverage_info.covered_lines);
+        const executable_lines: f32 = @floatFromInt(self.coverage_info.executable_lines);
         const command = std.mem.join(self.arena, " ", self.command) catch unreachable;
         try writer.print(@embedFile("assets/file_report.html"), .{
             .filepath = core.SourceFilepathFmt.init(self.source_file),
             .command = command,
-            .coverage = covered / total_executable * 100,
-            .covered = covered,
-            .total = total_executable,
+            .coverage = covered_lines / executable_lines * 100,
+            .covered = covered_lines,
+            .total = executable_lines,
             .css_path = self.css_path,
             .lines = LineNumbers.init(std.mem.count(u8, self.source_content, "\n")),
             .source = SourceCode.init(self.source_id, self.source_content, self.coverage_info),
@@ -193,7 +180,10 @@ pub const SourceCode = struct {
 
         while (it.next()) |line| : (index += 1) {
             // If not found - then this line is not executable
-            const line_status = self.coverage_info.line_info.get(.{ .source_file = self.source_id, .line = index }) orelse .not_executable;
+            const line_status = self.coverage_info.line_info.get(.{
+                .source_file = self.source_id,
+                .line = index,
+            }) orelse .not_executable;
             try writer.print(
                 \\<span class="{[status]s}">{[line]s}
                 \\</span>
@@ -209,16 +199,15 @@ pub const SourceCode = struct {
 };
 
 const ReportList = struct {
-    files: []core.StringId,
+    files: []const []const u8,
 
     pub fn format(self: ReportList, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
         for (self.files) |file| {
-            const filename = core.string_interner.lookup(file).?;
             try writer.print(
                 \\<li><a href="{s}.html">{0s}</a></li>
-            , .{filename});
+            , .{file});
         }
     }
 };
