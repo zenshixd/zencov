@@ -1,3 +1,3 @@
 void otherFn(int* i) {
-    i++;
+    *i += 1;
 }

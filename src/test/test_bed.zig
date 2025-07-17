@@ -21,11 +21,11 @@ exe: []const u8,
 debug_info: DebugInfo,
 coverage_info: cov.CoverageInfo,
 
-pub fn runTest(exe: []const u8, include_mode: core.IncludeMode) TestBed {
+pub fn runTest(exe: []const u8, include_paths: []const []const u8) TestBed {
     var ctx = core.Context.init(std.testing.allocator, arena_allocator.allocator());
 
-    const debug_info = DebugInfo.init(&ctx, exe, include_mode);
-    bp.runInstrumentedAndWait(&ctx, &.{exe}, &debug_info);
+    const debug_info = DebugInfo.init(&ctx, exe, include_paths);
+    bp.runInstrumentedAndWait(&ctx, &debug_info, &.{exe});
     const coverage_info = cov.getCoverageInfo(&ctx, &debug_info);
 
     return .{

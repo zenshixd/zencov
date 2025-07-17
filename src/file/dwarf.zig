@@ -619,7 +619,7 @@ pub const FileEntry = struct {
     }
 };
 
-pub fn getLineNumberProgram(di: *Dwarf, gpa: std.mem.Allocator, vmaddr_base: usize, entry: DebugInfoEntry) error{ NoDebugLineSection, UnexpectedDebugLineSectionEnd }!LineNumberProgram {
+pub fn getLineNumberProgram(di: *Dwarf, gpa: std.mem.Allocator, entry: DebugInfoEntry) error{ NoDebugLineSection, UnexpectedDebugLineSectionEnd }!LineNumberProgram {
     const debug_line_off = entry.getAttrLinePtr(DW.AT.stmt_list) catch unreachable;
     const section = di.sections.get(.debug_line) orelse return error.NoDebugLineSection;
     var fbr = std.debug.FixedBufferReader{
@@ -739,7 +739,6 @@ pub fn getLineNumberProgram(di: *Dwarf, gpa: std.mem.Allocator, vmaddr_base: usi
     const section_end = debug_line_off + unit_header.unit_length;
     return LineNumberProgram{
         .gpa = gpa,
-        .vmaddr_base = vmaddr_base,
         .fbr = fbr,
         .section_end = section_end,
         .files = files,
@@ -763,7 +762,6 @@ pub const LineInfo = struct {
 
 pub const LineNumberProgram = struct {
     gpa: std.mem.Allocator,
-    vmaddr_base: usize,
     fbr: std.debug.FixedBufferReader,
     section_end: usize,
     directories: std.ArrayListUnmanaged(FileEntry),
@@ -850,7 +848,7 @@ pub const LineNumberProgram = struct {
             self.discriminator = 0;
             return LineInfo{
                 .file = self.file,
-                .address = self.vmaddr_base + self.address,
+                .address = self.address,
                 .line = self.line,
                 .col = self.column,
             };
@@ -864,7 +862,7 @@ pub const LineNumberProgram = struct {
                     self.epilogue_begin = false;
                     return LineInfo{
                         .file = self.file,
-                        .address = self.vmaddr_base + self.address,
+                        .address = self.address,
                         .line = self.line,
                         .col = self.column,
                     };

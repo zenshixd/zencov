@@ -1,10 +1,11 @@
 // TODO: make memory writable in bulk - no need to toggle writable for individual breakpoints
 const std = @import("std");
+const path = std.fs.path;
 const core = @import("core.zig");
 const os = core.os;
 const DebugInfo = @import("./file/debug_info.zig");
 
-pub fn runInstrumentedAndWait(ctx: *core.Context, tracee_cmd: []const []const u8, debug_info: *const DebugInfo) void {
+pub fn runInstrumentedAndWait(ctx: *core.Context, debug_info: *const DebugInfo, tracee_cmd: []const []const u8) void {
     std.log.debug("runInstrumentedAndWait: tracee_cmd: {s}", .{tracee_cmd[0]});
     ctx.pid = os.spawnForTracing(ctx, tracee_cmd);
     std.log.debug("runInstrumentedAndWait: ctx.pid: {d}", .{ctx.pid});
@@ -14,8 +15,9 @@ pub fn runInstrumentedAndWait(ctx: *core.Context, tracee_cmd: []const []const u8
 
     var line_it = debug_info.line_info.iterator();
     while (line_it.next()) |entry| {
+        const src_file = debug_info.source_files[@intFromEnum(entry.value_ptr.source_file)];
         std.log.debug("Setting breakpoint in {} at line {d} at address {x}", .{
-            core.SourceFilepathFmt.init(debug_info.source_files[@intFromEnum(entry.value_ptr.source_file)]),
+            core.SourceFilepathFmt.init(src_file),
             entry.value_ptr.line,
             entry.value_ptr.*.address,
         });

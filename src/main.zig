@@ -20,6 +20,7 @@ const cov = @import("coverage.zig");
 const TestBed = @import("test/test_bed.zig");
 const snap = @import("test/snapshots.zig").snap;
 
+const ZENCOV_INCLUDE_PATHS = &[_][]const u8{"zencov/"};
 pub fn main() void {
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer _ = debug_allocator.deinit();
@@ -34,8 +35,8 @@ pub fn main() void {
 
     const args = std.process.argsAlloc(ctx.arena) catch unreachable;
     const tracee_cmd = args[1..];
-    const debug_info = DebugInfo.init(&ctx, tracee_cmd[0], .only_comp_dir);
-    bp.runInstrumentedAndWait(&ctx, tracee_cmd, &debug_info);
+    const debug_info = DebugInfo.init(&ctx, tracee_cmd[0], ZENCOV_INCLUDE_PATHS);
+    bp.runInstrumentedAndWait(&ctx, &debug_info, tracee_cmd);
     const coverage_info = cov.getCoverageInfo(&ctx, &debug_info);
     report.generateReport(&ctx, tracee_cmd, debug_info.source_files, coverage_info);
 }
@@ -73,7 +74,7 @@ test {
 }
 
 test "basic" {
-    var t = TestBed.runTest("zig-out/bin/basic", .only_comp_dir);
+    var t = TestBed.runTest("zig-out/bin/basic", ZENCOV_INCLUDE_PATHS);
     defer t.deinit();
 
     try t.expectSourceFiles(snap(@src(),
@@ -99,7 +100,7 @@ test "basic" {
 }
 
 test "basic multifile" {
-    var t = TestBed.runTest("zig-out/bin/basic_multifile", .only_comp_dir);
+    var t = TestBed.runTest("zig-out/bin/basic_multifile", ZENCOV_INCLUDE_PATHS);
     defer t.deinit();
 
     try t.expectSourceFiles(snap(@src(),
@@ -136,18 +137,17 @@ test "basic multifile" {
 }
 
 test "basic c" {
-    var t = TestBed.runTest("zig-out/bin/basic_c", .only_comp_dir);
+    var t = TestBed.runTest("zig-out/bin/basic_c", ZENCOV_INCLUDE_PATHS);
     defer t.deinit();
 
     try t.expectSourceFiles(snap(@src(),
         \\tests/basic_c/
         \\  main.c
     ));
-    // FIXME: why closing bracket is counted as executable???
     try t.expectCoverageInfo(snap(@src(),
         \\Command: zig-out/bin/basic_c
         \\File: /Users/ownelek/Projects/zencov/tests/basic_c/main.c
-        \\Line coverage: 4/6
+        \\Line coverage: 7/9
         \\ 1 [-]: #include <stdio.h>
         \\ 2 [-]: 
         \\ 3 [t]: int main() {
@@ -155,15 +155,19 @@ test "basic c" {
         \\ 5 [t]:     if (x < 1) {
         \\ 6 [n]:       x = 2;
         \\ 7 [n]:     }
-        \\ 8 [t]:     return 0;
-        \\ 9 [-]: }
-        \\10 [-]: 
+        \\ 8 [-]: 
+        \\ 9 [t]:     if (x == 1) {
+        \\10 [t]:         x = 3;
+        \\11 [t]:     }
+        \\12 [t]:     return 0;
+        \\13 [-]: }
+        \\14 [-]: 
         \\
     ));
 }
 
 test "basic c multifile" {
-    var t = TestBed.runTest("zig-out/bin/basic_c_multifile", .only_comp_dir);
+    var t = TestBed.runTest("zig-out/bin/basic_c_multifile", ZENCOV_INCLUDE_PATHS);
     defer t.deinit();
 
     try t.expectSourceFiles(snap(@src(),
@@ -171,31 +175,29 @@ test "basic c multifile" {
         \\  main.c
         \\  other.c
     ));
-    // FIXME: Breakpoints are set incorrectly - C compiler bundles multiple .o files
-    // and they have different addresses in executable than in debug info
     try t.expectCoverageInfo(snap(@src(),
         \\Command: zig-out/bin/basic_c_multifile
         \\File: /Users/ownelek/Projects/zencov/tests/basic_c_multifile/main.c
-        \\Line coverage: 0/7
+        \\Line coverage: 5/7
         \\ 1 [-]: #include <stdio.h> 
         \\ 2 [-]: 
         \\ 3 [-]: void otherFn(int* i);
         \\ 4 [-]: 
-        \\ 5 [n]: int main() {
-        \\ 6 [n]:     int i = 0;
-        \\ 7 [n]:     otherFn(&i);
-        \\ 8 [n]:     if (i == 0) {
+        \\ 5 [t]: int main() {
+        \\ 6 [t]:     int i = 0;
+        \\ 7 [t]:     otherFn(&i);
+        \\ 8 [t]:     if (i == 0) {
         \\ 9 [n]:         i = 1;
         \\10 [n]:     }
-        \\11 [n]:     return i;
+        \\11 [t]:     return i;
         \\12 [-]: }
         \\13 [-]: 
         \\
         \\File: /Users/ownelek/Projects/zencov/tests/basic_c_multifile/other.c
-        \\Line coverage: 0/3
-        \\1 [n]: void otherFn(int* i) {
-        \\2 [n]:     i++;
-        \\3 [n]: }
+        \\Line coverage: 3/3
+        \\1 [t]: void otherFn(int* i) {
+        \\2 [t]:     *i += 1;
+        \\3 [t]: }
         \\4 [-]: 
         \\
     ));
