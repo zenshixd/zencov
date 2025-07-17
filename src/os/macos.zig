@@ -11,21 +11,17 @@ const LineInfoHashMap = @import("../file/debug_info.zig").LineInfoHashMap;
 pub const PID = platform.PosixPID;
 pub const Breakpoint = core.Breakpoint;
 
-var child_process_port: ?platform.MachPort = null;
-var exception_port: platform.MachPort = undefined;
-var breakpoint_handler: *const fn (ctx: *core.Context, pc: usize) bool = undefined;
-
-pub fn getPortForPid(pid: PID) platform.MachPort {
+pub fn getPortForPid(ctx: *core.Context, pid: PID) platform.MachPort {
     if (pid == PID.current) {
         return platform.taskSelf();
     }
 
-    if (child_process_port) |port| {
+    if (ctx.process_port_map.get(pid)) |port| {
         return port;
     }
 
     const port = platform.taskSelf().taskForPid(pid) catch |err| panic("Cannot get child task for pid {}: {}", .{ pid, err });
-    child_process_port = port;
+    ctx.process_port_map.put(pid, port) catch unreachable;
     return port;
 }
 
@@ -49,48 +45,59 @@ pub fn spawnForTracing(ctx: *core.Context, args: []const []const u8) PID {
         panic("posix_spawn failed: {}", .{err});
 }
 
-pub fn processResume(pid: PID) void {
-    const child_task: platform.MachPort = getPortForPid(pid);
+pub fn processResume(ctx: *core.Context, pid: PID) void {
+    const child_task: platform.MachPort = getPortForPid(ctx, pid);
     child_task.@"resume"() catch |err| panic("Cannot resume task: {}", .{err});
 }
 
-pub fn processSuspend(pid: PID) void {
-    const child_task: platform.MachPort = getPortForPid(pid);
+pub fn processSuspend(ctx: *core.Context, pid: PID) void {
+    const child_task: platform.MachPort = getPortForPid(ctx, pid);
     child_task.@"suspend"() catch |err| panic("Cannot suspend task: {}", .{err});
 }
 
-pub fn getMemoryRegion(pid: PID, address: usize) []const u8 {
-    const task = getPortForPid(pid);
+pub fn getMemoryRegion(ctx: *core.Context, pid: PID, address: usize) []const u8 {
+    const task = getPortForPid(ctx, pid);
     const result = task.vmRegionRecurse(address, 1024) catch |err| panic("Cannot get vm region for pid {}: {}", .{ pid, err });
 
     return @as([*]const u8, @ptrFromInt(result.address))[0..result.size];
 }
 
-pub fn setupBreakpointHandler(pid: PID, handler: *const fn (ctx: *core.Context, pc: usize) bool) void {
-    const child_task: platform.MachPort = getPortForPid(pid);
-    exception_port = platform.taskSelf().portAllocate(platform.MachPortRight.RECEIVE) catch |err| panic("Cannot allocate exception port: {}", .{err});
-    platform.taskSelf().portInsertRight(exception_port, exception_port, platform.MachMsgType.MAKE_SEND) catch |err| panic("Cannot insert exception port: {}", .{err});
-    child_task.setExceptionPorts(platform.EXC.MASK.ALL, exception_port, @intFromEnum(platform.ExceptionType.default) | @intFromEnum(platform.ExceptionType.exception_codes), .NONE) catch |err|
+pub fn setupBreakpointHandler(ctx: *core.Context, pid: PID, handler: *const fn (ctx: *core.Context, pc: usize) bool) void {
+    const exception_port = ctx.exception_port_map.getOrPut(pid) catch unreachable;
+    if (exception_port.found_existing) {
+        return;
+    }
+
+    const child_task: platform.MachPort = getPortForPid(ctx, pid);
+    exception_port.value_ptr.* = platform.taskSelf().portAllocate(platform.MachPortRight.RECEIVE) catch |err| panic("Cannot allocate exception port: {}", .{err});
+    platform.taskSelf().portInsertRight(exception_port.value_ptr.*, exception_port.value_ptr.*, platform.MachMsgType.MAKE_SEND) catch |err| panic("Cannot insert exception port: {}", .{err});
+    child_task.setExceptionPorts(
+        platform.EXC.MASK.ALL,
+        exception_port.value_ptr.*,
+        @intFromEnum(platform.ExceptionType.default) | @intFromEnum(platform.ExceptionType.exception_codes),
+        .NONE,
+    ) catch |err|
         panic("Cannot set exception ports: {}", .{err});
-    breakpoint_handler = handler;
-    std.log.debug("setupBreakpointHandler: pid: {}, child_task: {}, exc_port: {}", .{ pid, child_task, exception_port });
+
+    ctx.breakpoint_handler_map.put(pid, handler) catch unreachable;
+    std.log.debug("setupBreakpointHandler: pid: {}, child_task: {}, exc_port: {}", .{ pid, child_task, exception_port.value_ptr.* });
 }
 
-pub fn setMemoryProtection(pid: PID, addr: []const u8, prot: core.EnumMask(platform.VmProt)) void {
+pub fn setMemoryProtection(ctx: *core.Context, pid: PID, addr: []const u8, prot: core.EnumMask(platform.VmProt)) void {
     std.log.debug("setMemoryWritable: pid: {}, addr: {*}, size: {}, prot: {b}", .{ pid, addr, addr.len, @as(u8, @bitCast(prot)) });
-    const child_task = getPortForPid(pid);
+    const child_task = getPortForPid(ctx, pid);
     child_task.protect(addr, false, @bitCast(prot)) catch |err| panic("Cannot set memory protection: {*}, len: {}, prot: {b}, err: {}", .{ addr, addr.len, @as(u8, @bitCast(prot)), err });
 }
 
-pub fn readMemory(pid: PID, T: type, at: [*]const u8) T {
+pub fn readMemory(ctx: *core.Context, pid: PID, T: type, at: [*]const u8) T {
     var out: T = undefined;
-    const child_task = getPortForPid(pid);
+    const child_task = getPortForPid(ctx, pid);
     _ = child_task.readMemOverwrite(at, @sizeOf(T), std.mem.asBytes(&out)) catch |err| panic("Cannot read memory {*}, len: {}: {}", .{ at, @sizeOf(T), err });
     return out;
 }
 
-pub fn writeMemory(pid: PID, addr: []const u8, data: []const u8) void {
-    const child_task = getPortForPid(pid);
+pub fn writeMemory(ctx: *core.Context, pid: PID, addr: []const u8, data: []const u8) void {
+    const child_task = getPortForPid(ctx, pid);
     child_task.writeMem(addr.ptr, data) catch |err| panic("Cannot write memory {*}, len: {}: {}", .{ addr, data.len, err });
 }
 
@@ -102,6 +109,7 @@ pub fn waitForPid(ctx: *core.Context) void {
             break;
         }
 
+        const exception_port = ctx.exception_port_map.get(ctx.pid) orelse panic("Cannot get exception port for pid {}", .{ctx.pid});
         const request = exception_port.receiveMessage(100, platform.MachPort.none) catch |err| switch (err) {
             error.RcvTimedOut => continue,
             else => panic("Cannot receive message: {}", .{err}),
@@ -136,6 +144,7 @@ fn machMsgHandler(ctx: *core.Context, msg: platform.MachMsgRequest) platform.Mac
             const ts = req.thread.name.threadGetState(.ARM64) catch |err| panic("Cannot get thread state: {}", .{err});
             std.log.debug("Thread state: {}", .{ts.arm64});
 
+            const breakpoint_handler = ctx.breakpoint_handler_map.get(ctx.pid) orelse panic("Cannot get breakpoint handler for pid {}", .{ctx.pid});
             reply.exception_raise.RetCode = if (breakpoint_handler(ctx, ts.arm64.pc)) platform.MachKernelReturn.Success else platform.MachKernelReturn.Failure;
             reply.exception_raise.NDR = platform.NDR_record.default;
             reply.header.size = @sizeOf(@TypeOf(reply.exception_raise));

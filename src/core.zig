@@ -5,11 +5,16 @@ pub usingnamespace @import("./core/fmt.zig");
 pub usingnamespace @import("./core/meta.zig");
 pub usingnamespace @import("./core/enum_mask.zig");
 
-pub const Context = struct {
+const platform = @import("./platform.zig");
+
+pub const ContextDarwin = struct {
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     pid: os.PID,
     breakpoints: BreakpointMap,
+    process_port_map: std.AutoArrayHashMap(os.PID, platform.MachPort),
+    exception_port_map: std.AutoArrayHashMap(os.PID, platform.MachPort),
+    breakpoint_handler_map: std.AutoArrayHashMap(os.PID, *const fn (ctx: *Context, pc: usize) bool),
 
     pub fn init(gpa: std.mem.Allocator, arena: std.mem.Allocator) Context {
         return .{
@@ -17,8 +22,23 @@ pub const Context = struct {
             .arena = arena,
             .pid = undefined,
             .breakpoints = .init(arena),
+            .process_port_map = .init(arena),
+            .exception_port_map = .init(arena),
+            .breakpoint_handler_map = .init(arena),
         };
     }
+
+    pub fn deinit(self: *Context) void {
+        self.breakpoints.deinit();
+        self.process_port_map.deinit();
+        self.exception_port_map.deinit();
+        self.breakpoint_handler_map.deinit();
+    }
+};
+
+pub const Context = switch (builtin.os.tag) {
+    .macos => ContextDarwin,
+    else => @compileError("Unsupported OS"),
 };
 
 pub const IncludeMode = enum {

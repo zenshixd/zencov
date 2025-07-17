@@ -548,6 +548,7 @@ pub fn parseDebugInfoEntries(fbr: *std.debug.FixedBufferReader, abbrevs: []Abbre
     const unit_header = readUnitHeader(fbr) catch return error.UnexpectedDebugInfoEnd;
     const version = fbr.readInt(u16) catch return error.UnexpectedDebugInfoEnd;
 
+    std.log.debug("Found debug info entry, version: {d}", .{version});
     // Order changes depending on version -.-
     const unit_type, const address_size, const debug_abbrev_offset = blk: {
         if (version >= 5) {

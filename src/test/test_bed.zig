@@ -36,13 +36,66 @@ pub fn runTest(exe: []const u8, include_mode: core.IncludeMode) TestBed {
     };
 }
 
-pub fn deinit(_: *TestBed) void {
-    arena_allocator.deinit();
+pub fn deinit(self: *TestBed) void {
+    self.ctx.deinit();
+    _ = arena_allocator.reset(.free_all);
+}
+
+pub fn expectSourceFiles(self: TestBed, expected: Snapshot) error{ SnapshotMismatch, SnapshotNotFound }!void {
+    var received_text = std.ArrayList(u8).init(self.ctx.arena);
+
+    var scratch_arena = std.heap.ArenaAllocator.init(self.ctx.gpa);
+    defer scratch_arena.deinit();
+    const scratch = scratch_arena.allocator();
+
+    var dir_graph = std.StringHashMap(std.StringHashMap(void)).init(scratch);
+    for (self.debug_info.source_files) |source_file| {
+        const dir_path = path: {
+            if (path.isAbsolute(source_file.dir)) {
+                break :path path.relative(scratch, source_file.dir, source_file.comp_dir) catch unreachable;
+            }
+
+            break :path source_file.dir;
+        };
+        const dir_result = dir_graph.getOrPut(dir_path) catch unreachable;
+        if (!dir_result.found_existing) {
+            dir_result.value_ptr.* = std.StringHashMap(void).init(scratch);
+        }
+        dir_result.value_ptr.put(source_file.filename, {}) catch unreachable;
+    }
+
+    const writer = received_text.writer();
+    var index: usize = 0;
+    var it = dir_graph.iterator();
+    while (it.next()) |entry| : (index += 1) {
+        if (index > 0) {
+            writer.writeByte('\n') catch unreachable;
+        }
+
+        const is_root = entry.key_ptr.*.len == 0;
+        if (is_root) {
+            writer.writeAll("~/") catch unreachable;
+        } else {
+            writer.print("{s}/", .{entry.key_ptr.*}) catch unreachable;
+        }
+        if (entry.value_ptr.count() > 0) {
+            writer.writeAll("\n") catch unreachable;
+            var file_index: usize = 0;
+            var file_it = entry.value_ptr.iterator();
+            while (file_it.next()) |file_entry| : (file_index += 1) {
+                if (file_index > 0) {
+                    writer.writeAll("\n") catch unreachable;
+                }
+                writer.print("  {s}", .{file_entry.key_ptr.*}) catch unreachable;
+            }
+        }
+    }
+
+    try expectSnapshotMatchString(received_text.items, expected);
 }
 
 pub fn expectCoverageInfo(self: TestBed, expected: Snapshot) error{ SnapshotMismatch, SnapshotNotFound }!void {
     var received_text = std.ArrayList(u8).init(self.ctx.arena);
-
     var scratch_arena = std.heap.ArenaAllocator.init(self.ctx.gpa);
     defer scratch_arena.deinit();
     const scratch = scratch_arena.allocator();
@@ -56,7 +109,14 @@ pub fn expectCoverageInfo(self: TestBed, expected: Snapshot) error{ SnapshotMism
             writer.writeByte('\n') catch unreachable;
         }
 
-        const filepath = path.join(scratch, &.{ source_file.dir, source_file.filename }) catch unreachable;
+        const file_info = self.coverage_info.file_info.get(@enumFromInt(i)) orelse panic("Cannot get file info for file {s}/{s}", .{ source_file.dir, source_file.filename });
+        const filepath = path: {
+            if (!path.isAbsolute(source_file.dir)) {
+                break :path path.join(scratch, &.{ source_file.comp_dir, source_file.dir, source_file.filename }) catch unreachable;
+            }
+
+            break :path path.join(scratch, &.{ source_file.dir, source_file.filename }) catch unreachable;
+        };
 
         writer.print(
             \\File: {s}
@@ -64,8 +124,8 @@ pub fn expectCoverageInfo(self: TestBed, expected: Snapshot) error{ SnapshotMism
             \\
         , .{
             filepath,
-            self.coverage_info.covered_lines,
-            self.coverage_info.executable_lines,
+            file_info.covered_lines,
+            file_info.executable_lines,
         }) catch unreachable;
 
         const fd = fs.openFileAbsolute(filepath, .{ .mode = .read_only }) catch |err| panic("Cannot open file {s}: {}", .{ filepath, err });

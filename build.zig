@@ -54,10 +54,7 @@ pub fn build(b: *std.Build) void {
 }
 
 pub fn buildTestBinaries(b: *std.Build, test_run_step: *std.Build.Step.Run, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
-    var arena_allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena_allocator.deinit();
-
-    const arena = arena_allocator.allocator();
+    const arena = b.allocator;
     var tests_dir = fs.cwd().openDir(TESTS_DIR, .{ .iterate = true }) catch |err| panic("Cannot open tests dir, reason: {}", .{err});
     defer tests_dir.close();
 
@@ -70,37 +67,66 @@ pub fn buildTestBinaries(b: *std.Build, test_run_step: *std.Build.Step.Run, targ
         defer test_dir.close();
 
         var test_kind: enum { none, zig, c } = .none;
-        const zig_filepath = std.mem.concat(arena, u8, &.{ entry.name, ".zig" }) catch unreachable;
-        const c_filepath = std.mem.concat(arena, u8, &.{ entry.name, ".c" }) catch unreachable;
-        if (test_dir.access(zig_filepath, .{ .mode = .read_only })) {
+        const entry_dir = path.join(arena, &.{ TESTS_DIR, entry.name }) catch unreachable;
+        var entry_filepath: []const u8 = undefined;
+        const zig_entry_file = "main.zig";
+        const c_entry_file = "main.c";
+        if (test_dir.access(zig_entry_file, .{ .mode = .read_only })) {
             test_kind = .zig;
+            entry_filepath = path.join(arena, &.{ entry_dir, zig_entry_file }) catch unreachable;
         } else |err| switch (err) {
             error.FileNotFound => {},
-            else => |e| panic("Cannot access test file: {s}, reason: {}", .{ zig_filepath, e }),
+            else => |e| panic("Cannot access test file: {s}, reason: {}", .{ zig_entry_file, e }),
         }
 
-        if (test_dir.access(c_filepath, .{ .mode = .read_only })) {
+        if (test_dir.access(c_entry_file, .{ .mode = .read_only })) {
             if (test_kind != .none) panic("Multiple test files found in test dir: {s}", .{entry.name});
             test_kind = .c;
+            entry_filepath = path.join(arena, &.{ entry_dir, c_entry_file }) catch unreachable;
         } else |err| switch (err) {
             error.FileNotFound => {},
-            else => |e| panic("Cannot access test file: {s}, reason: {}", .{ c_filepath, e }),
+            else => |e| panic("Cannot access test file: {s}, reason: {}", .{ c_entry_file, e }),
         }
 
-        assert(test_kind != .none);
+        const exe = exe: {
+            switch (test_kind) {
+                .c => {
+                    var c_source_files = std.ArrayList([]const u8).init(arena);
 
-        const entry_dir = path.join(arena, &.{ TESTS_DIR, entry.name }) catch unreachable;
-        const entry_filepath = path.join(arena, &.{ entry_dir, switch (test_kind) {
-            .zig => zig_filepath,
-            .c => c_filepath,
-            .none => unreachable,
-        } }) catch unreachable;
-        const exe = b.addExecutable(.{
-            .name = entry.name,
-            .root_source_file = b.path(entry_filepath),
-            .target = target,
-            .optimize = optimize,
-        });
+                    var walker = test_dir.walk(arena) catch unreachable;
+                    defer walker.deinit();
+
+                    while (walker.next() catch unreachable) |c_entry| {
+                        if (c_entry.kind != .file) continue;
+                        if (!std.mem.endsWith(u8, c_entry.basename, ".c")) continue;
+                        c_source_files.append(arena.dupe(u8, c_entry.path) catch unreachable) catch unreachable;
+                    }
+
+                    const c_exe = b.addExecutable(.{
+                        .name = entry.name,
+                        .target = target,
+                        .optimize = optimize,
+                    });
+                    c_exe.addCSourceFiles(.{
+                        .root = b.path(entry_dir),
+                        .files = c_source_files.toOwnedSlice() catch unreachable,
+                        .language = .c,
+                    });
+                    c_exe.linkLibC();
+                    break :exe c_exe;
+                },
+                .zig => {
+                    const zig_exe = b.addExecutable(.{
+                        .name = entry.name,
+                        .root_source_file = b.path(entry_filepath),
+                        .target = target,
+                        .optimize = optimize,
+                    });
+                    break :exe zig_exe;
+                },
+                .none => unreachable,
+            }
+        };
 
         const install_step = b.addInstallArtifact(exe, .{});
         test_run_step.step.dependOn(&install_step.step);

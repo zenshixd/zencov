@@ -59,7 +59,10 @@ pub fn init(ctx: *core.Context, exec_file: []const u8, include_mode: core.Includ
                 if (line.line == 0) continue;
                 // TODO:: is this always line.file - 1 ? or is it DWARF5 (or DWARF4?) thing? i dont remember
                 const file = prog.files.items[line.file - 1];
-                const dir_path = prog.directories.items[file.dir_index].path;
+                var dir_path = prog.directories.items[file.dir_index].path;
+                if (!path.isAbsolute(dir_path)) {
+                    dir_path = path.join(ctx.arena, &.{ comp_dir, dir_path }) catch unreachable;
+                }
                 if (include_mode == .only_comp_dir and !std.mem.startsWith(u8, dir_path, comp_dir)) {
                     continue;
                 }
@@ -69,6 +72,7 @@ pub fn init(ctx: *core.Context, exec_file: []const u8, include_mode: core.Includ
                         break :id id;
                     }
 
+                    std.log.debug("Adding source file {s}/{s}", .{ dir, file.path });
                     const new_source_file_id: core.SourceFileId = @enumFromInt(source_files_map.count());
                     source_files_map.put(.{
                         .comp_dir = ctx.arena.dupe(u8, comp_dir) catch unreachable,

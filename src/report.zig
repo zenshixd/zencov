@@ -115,8 +115,9 @@ pub const SourceFileReport = struct {
         _ = fmt;
         _ = options;
 
-        const covered_lines: f32 = @floatFromInt(self.coverage_info.covered_lines);
-        const executable_lines: f32 = @floatFromInt(self.coverage_info.executable_lines);
+        const file_info = self.coverage_info.file_info.get(self.source_id) orelse panic("Cannot get file info for file {s}/{s}", .{ self.source_file.dir, self.source_file.filename });
+        const covered_lines: f32 = @floatFromInt(file_info.covered_lines);
+        const executable_lines: f32 = @floatFromInt(file_info.executable_lines);
         const command = std.mem.join(self.arena, " ", self.command) catch unreachable;
         try writer.print(@embedFile("assets/file_report.html"), .{
             .filepath = core.SourceFilepathFmt.init(self.source_file),
