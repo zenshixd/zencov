@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 
-const platform = @import("../platform.zig");
+const mach = @import("../platform.zig").mach;
 
 pub const MH_MAGIC = 0xfeedface;
 pub const MH_MAGIC_64 = 0xfeedfacf;
@@ -50,10 +50,10 @@ pub const Segment64Command = extern struct {
     filesize: u64 = 0,
 
     /// maximum VM protection
-    maxprot: i32 = platform.VmProt.NONE,
+    maxprot: i32 = mach.VmProt.NONE,
 
     /// initial VM protection
-    initprot: i32 = platform.VmProt.NONE,
+    initprot: i32 = mach.VmProt.NONE,
 
     /// number of sections in segment
     nsects: u32 = 0,

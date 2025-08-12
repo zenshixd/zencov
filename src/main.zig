@@ -4,27 +4,27 @@
 // TODO: pretty report
 // TODO: better grid for index.html files
 
-const std = @import("std");
-const assert = std.debug.assert;
-const panic = std.debug.panic;
 const builtin = @import("builtin");
 
-const DebugInfo = @import("./file/debug_info.zig");
 const core = @import("core.zig");
-const os = core.os;
+const mem = @import("core/mem.zig");
+const debug = @import("core/debug.zig");
+const logger = @import("core/logger.zig");
+const process = @import("core/process.zig");
 const platform = @import("platform.zig");
 const report = @import("report.zig");
 const bp = @import("breakpoints.zig");
 const cov = @import("coverage.zig");
+const DebugInfo = @import("./debug_info/debug_info.zig");
 
 const TestBed = @import("test/test_bed.zig");
 const snap = @import("test/snapshots.zig").snap;
 
 const ZENCOV_INCLUDE_PATHS = &[_][]const u8{"zencov/"};
 pub fn main() void {
-    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    var debug_allocator = mem.GeneralAllocator.init();
     defer _ = debug_allocator.deinit();
-    var arena_allocator = std.heap.ArenaAllocator.init(debug_allocator.allocator());
+    var arena_allocator = mem.ArenaAllocator.init();
     defer {
         if (builtin.mode == .Debug) {
             arena_allocator.deinit();
@@ -33,43 +33,33 @@ pub fn main() void {
 
     var ctx = core.Context.init(debug_allocator.allocator(), arena_allocator.allocator());
 
-    const args = std.process.argsAlloc(ctx.arena) catch unreachable;
+    const args = process.argsAlloc(ctx.arena) catch unreachable;
     const tracee_cmd = args[1..];
     const debug_info = DebugInfo.init(&ctx, tracee_cmd[0], ZENCOV_INCLUDE_PATHS);
-    bp.runInstrumentedAndWait(&ctx, &debug_info, tracee_cmd);
-    const coverage_info = cov.getCoverageInfo(&ctx, &debug_info);
+    const pid = bp.runInstrumentedAndWait(&ctx, &debug_info, tracee_cmd);
+    const coverage_info = cov.getCoverageInfo(&ctx, pid, &debug_info);
+    const coverage_info2 = cov.getCoverageInfo2(&ctx, pid, &debug_info);
+    printDirEntry(&coverage_info2);
+
     report.generateReport(&ctx, tracee_cmd, debug_info.source_files, coverage_info);
 }
 
-pub const std_options: std.Options = .{
-    .log_level = if (builtin.mode == .Debug) .debug else .info,
-    .logFn = covLog,
-};
-fn covLog(
-    comptime level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
-    comptime format: []const u8,
-    args: anytype,
-) void {
-    const prefix1 = if (scope == .default) "" else "[" ++ @tagName(scope) ++ "] ";
-    const prefix2 = switch (level) {
-        .err => "error: ",
-        .warn => "warning: ",
-        .info => "",
-        .debug => "debug: ",
-    };
-    const out_writer = if (level == .err) std.io.getStdErr().writer() else std.io.getStdOut().writer();
+pub fn printDirEntry(entry: *const cov.DirEntry) void {
+    var dirs_it = entry.dirs.iterator();
+    while (dirs_it.next()) |dir| {
+        logger.debug("{s}/", .{dir.key_ptr.*});
+        printDirEntry(dir.value_ptr);
+    }
 
-    var bw = std.io.bufferedWriter(out_writer);
-    const bw_writer = bw.writer();
-
-    nosuspend {
-        bw_writer.print(prefix1 ++ prefix2 ++ format ++ "\n", args) catch return;
-        bw.flush() catch return;
+    var files_it = entry.files.iterator();
+    while (files_it.next()) |file| {
+        logger.debug("{s}", .{file.key_ptr.*});
     }
 }
+
 test {
     _ = @import("core/enum_mask.zig");
+    _ = @import("core/radix_tree.zig");
     _ = @import("test/snapshots.zig");
 }
 
@@ -78,12 +68,12 @@ test "basic" {
     defer t.deinit();
 
     try t.expectSourceFiles(snap(@src(),
-        \\~/
-        \\  main.zig
+        \\main.zig
+        \\
     ));
     try t.expectCoverageInfo(snap(@src(),
         \\Command: zig-out/bin/basic
-        \\File: /Users/ownelek/Projects/zencov/tests/basic/main.zig
+        \\File: tests/basic/main.zig
         \\Line coverage: 4/5
         \\ 1 [-]: const std = @import("std");
         \\ 2 [-]: 
@@ -104,13 +94,13 @@ test "basic multifile" {
     defer t.deinit();
 
     try t.expectSourceFiles(snap(@src(),
-        \\~/
-        \\  other.zig
-        \\  main.zig
+        \\other.zig
+        \\main.zig
+        \\
     ));
     try t.expectCoverageInfo(snap(@src(),
         \\Command: zig-out/bin/basic_multifile
-        \\File: /Users/ownelek/Projects/zencov/tests/basic_multifile/main.zig
+        \\File: tests/basic_multifile/main.zig
         \\Line coverage: 5/6
         \\ 1 [-]: const std = @import("std");
         \\ 2 [-]: const other_file = @import("other.zig");
@@ -125,7 +115,7 @@ test "basic multifile" {
         \\11 [-]: }
         \\12 [-]: 
         \\
-        \\File: /Users/ownelek/Projects/zencov/tests/basic_multifile/other.zig
+        \\File: tests/basic_multifile/other.zig
         \\Line coverage: 3/3
         \\1 [t]: pub fn testFn(value: usize) bool {
         \\2 [t]:     const x = value + 1;
@@ -141,12 +131,14 @@ test "basic c" {
     defer t.deinit();
 
     try t.expectSourceFiles(snap(@src(),
-        \\tests/basic_c/
-        \\  main.c
+        \\tests/
+        \\  basic_c/
+        \\    main.c
+        \\
     ));
     try t.expectCoverageInfo(snap(@src(),
         \\Command: zig-out/bin/basic_c
-        \\File: /Users/ownelek/Projects/zencov/tests/basic_c/main.c
+        \\File: tests/basic_c/main.c
         \\Line coverage: 7/9
         \\ 1 [-]: #include <stdio.h>
         \\ 2 [-]: 
@@ -171,13 +163,15 @@ test "basic c multifile" {
     defer t.deinit();
 
     try t.expectSourceFiles(snap(@src(),
-        \\tests/basic_c_multifile/
-        \\  main.c
-        \\  other.c
+        \\tests/
+        \\  basic_c_multifile/
+        \\    main.c
+        \\    other.c
+        \\
     ));
     try t.expectCoverageInfo(snap(@src(),
         \\Command: zig-out/bin/basic_c_multifile
-        \\File: /Users/ownelek/Projects/zencov/tests/basic_c_multifile/main.c
+        \\File: tests/basic_c_multifile/main.c
         \\Line coverage: 5/7
         \\ 1 [-]: #include <stdio.h> 
         \\ 2 [-]: 
@@ -193,12 +187,44 @@ test "basic c multifile" {
         \\12 [-]: }
         \\13 [-]: 
         \\
-        \\File: /Users/ownelek/Projects/zencov/tests/basic_c_multifile/other.c
+        \\File: tests/basic_c_multifile/other.c
         \\Line coverage: 3/3
         \\1 [t]: void otherFn(int* i) {
         \\2 [t]:     *i += 1;
         \\3 [t]: }
         \\4 [-]: 
+        \\
+    ));
+}
+
+test "basic with subdirs" {
+    var t = TestBed.runTest("zig-out/bin/basic_with_subdirs", ZENCOV_INCLUDE_PATHS);
+    defer t.deinit();
+
+    try t.expectSourceFiles(snap(@src(),
+        \\a/
+        \\  other.zig
+        \\main.zig
+        \\
+    ));
+    try t.expectCoverageInfo(snap(@src(),
+        \\Command: zig-out/bin/basic_with_subdirs
+        \\File: tests/basic_with_subdirs/main.zig
+        \\Line coverage: 2/2
+        \\1 [-]: const other = @import("a/other.zig");
+        \\2 [-]: 
+        \\3 [t]: pub fn main() void {
+        \\4 [t]:     _ = other.testFn(0);
+        \\5 [-]: }
+        \\6 [-]: 
+        \\
+        \\File: tests/basic_with_subdirs/a/other.zig
+        \\Line coverage: 3/3
+        \\1 [t]: pub fn testFn(value: usize) bool {
+        \\2 [t]:     const x = value + 1;
+        \\3 [t]:     return x > 10;
+        \\4 [-]: }
+        \\5 [-]: 
         \\
     ));
 }

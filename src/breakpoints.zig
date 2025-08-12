@@ -2,22 +2,25 @@
 const std = @import("std");
 const path = std.fs.path;
 const core = @import("core.zig");
-const os = core.os;
-const DebugInfo = @import("./file/debug_info.zig");
+const inst = @import("instrumentation.zig");
+const DebugInfo = @import("./debug_info/debug_info.zig");
 
-pub fn runInstrumentedAndWait(ctx: *core.Context, debug_info: *const DebugInfo, tracee_cmd: []const []const u8) void {
+pub fn runInstrumentedAndWait(ctx: *core.Context, debug_info: *const DebugInfo, tracee_cmd: []const []const u8) *inst.PID {
     std.log.debug("runInstrumentedAndWait: tracee_cmd: {s}", .{tracee_cmd[0]});
-    ctx.pid = os.spawnForTracing(ctx, tracee_cmd);
-    std.log.debug("runInstrumentedAndWait: ctx.pid: {d}", .{ctx.pid});
-    os.setupBreakpointHandler(ctx, ctx.pid, &breakpointHandler);
+    const pid = inst.spawnForTracing(ctx, tracee_cmd);
+    std.log.debug("runInstrumentedAndWait: pid: {*}", .{pid});
+    pid.setupBreakpointHandler(&breakpointHandler);
 
-    const base_vm_region = os.getMemoryRegion(ctx, ctx.pid, 0);
+    const base_vm_region = pid.getMemoryRegion(0);
 
     var line_it = debug_info.line_info.iterator();
     while (line_it.next()) |entry| {
         const src_file = debug_info.source_files[@intFromEnum(entry.value_ptr.source_file)];
         std.log.debug("Setting breakpoint in {} at line {d} at address {x}", .{
-            core.SourceFilepathFmt.init(src_file),
+            core.SourceFilepathFmt{
+                .ctx = ctx,
+                .source_file = src_file,
+            },
             entry.value_ptr.line,
             entry.value_ptr.*.address,
         });
@@ -25,30 +28,34 @@ pub fn runInstrumentedAndWait(ctx: *core.Context, debug_info: *const DebugInfo, 
         // Correct address first
         entry.value_ptr.address += @intFromPtr(base_vm_region.ptr);
 
-        const bp = createBreakpoint(ctx, @ptrFromInt(entry.value_ptr.address));
-        ctx.breakpoints.put(entry.value_ptr.address, bp) catch unreachable;
+        const bp = createBreakpoint(pid, @ptrFromInt(entry.value_ptr.address));
+        ctx.breakpoints.put(.{ .pid = pid, .addr = @ptrFromInt(entry.value_ptr.address) }, bp) catch unreachable;
     }
 
-    os.processResume(ctx, ctx.pid);
-    os.waitForPid(ctx);
+    pid.processResume();
+    pid.waitForPid();
+
+    return pid;
 }
 
-fn breakpointHandler(ctx: *core.Context, pc: usize) bool {
-    const bp = ctx.breakpoints.getPtr(pc).?;
-    removeBreakpoint(ctx, bp);
+fn breakpointHandler(handle: *anyopaque, pc: usize) bool {
+    const pid: *inst.PID = @ptrCast(handle);
+    const ctx = pid.getContext();
+    const bp = ctx.breakpoints.getPtr(.{ .pid = pid, .addr = @ptrFromInt(pc) }).?;
+    removeBreakpoint(pid, bp);
     bp.triggered = true;
     return true;
 }
 
-pub fn createBreakpoint(ctx: *core.Context, at: [*]const u8) core.Breakpoint {
-    std.log.debug("createBreakpoint: pid: {}, at: {*}", .{ ctx.pid, at });
+pub fn createBreakpoint(pid: *inst.PID, at: [*]const u8) inst.Breakpoint {
+    std.log.debug("createBreakpoint: pid: {}, at: {*}", .{ pid, at });
 
-    const prev_opcode = os.readMemory(ctx, ctx.pid, core.InstructionSize, at);
+    const prev_opcode = pid.readMemory(inst.InstructionSize, at);
 
-    const instruction_addr = at[0..@sizeOf(core.InstructionSize)];
-    os.setMemoryProtection(ctx, ctx.pid, instruction_addr, .{ .READ = 1, .WRITE = 1, .COPY = 1 });
-    os.writeMemory(ctx, ctx.pid, instruction_addr, std.mem.asBytes(&core.BRK_OPCODE));
-    os.setMemoryProtection(ctx, ctx.pid, instruction_addr, .{ .READ = 1, .EXEC = 1 });
+    const instruction_addr = at[0..@sizeOf(inst.InstructionSize)];
+    pid.setMemoryProtection(instruction_addr, .{ .read = 1, .write = 1 });
+    pid.writeMemory(instruction_addr, std.mem.asBytes(&inst.BRK_OPCODE));
+    pid.setMemoryProtection(instruction_addr, .{ .read = 1, .exec = 1 });
 
     return .{
         .enabled = true,
@@ -58,13 +65,13 @@ pub fn createBreakpoint(ctx: *core.Context, at: [*]const u8) core.Breakpoint {
     };
 }
 
-pub fn removeBreakpoint(ctx: *core.Context, breakpoint: *core.Breakpoint) void {
-    std.log.debug("removeBreakpoint: pid: {}, breakpoint: {}", .{ ctx.pid, breakpoint });
+pub fn removeBreakpoint(pid: *inst.PID, breakpoint: *inst.Breakpoint) void {
+    std.log.debug("removeBreakpoint: pid: {}, breakpoint: {}", .{ pid, breakpoint });
 
-    const instruction_addr = breakpoint.addr[0..@sizeOf(core.InstructionSize)];
-    os.setMemoryProtection(ctx, ctx.pid, instruction_addr, .{ .READ = 1, .WRITE = 1, .COPY = 1 });
-    os.writeMemory(ctx, ctx.pid, instruction_addr, std.mem.asBytes(&breakpoint.original_opcode));
-    os.setMemoryProtection(ctx, ctx.pid, instruction_addr, .{ .READ = 1, .EXEC = 1 });
+    const instruction_addr = breakpoint.addr[0..@sizeOf(inst.InstructionSize)];
+    pid.setMemoryProtection(instruction_addr, .{ .read = 1, .write = 1 });
+    pid.writeMemory(instruction_addr, std.mem.asBytes(&breakpoint.original_opcode));
+    pid.setMemoryProtection(instruction_addr, .{ .read = 1, .exec = 1 });
 
     breakpoint.enabled = false;
 }

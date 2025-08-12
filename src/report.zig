@@ -5,13 +5,14 @@ const panic = std.debug.panic;
 const core = @import("./core.zig");
 const cov = @import("./coverage.zig");
 
-const DebugInfo = @import("./file/debug_info.zig");
+const DebugInfo = @import("./debug_info/debug_info.zig");
 
 const OUT_DIR = "zencov-report";
 const CSS_SOURCE_FILE = "assets/file_report.css";
 const CSS_DEST_FILE = "index.css";
 
 pub const Subdir = struct {
+    source_reldirpath: []const u8,
     source_dir: std.fs.Dir,
     report_dir: std.fs.Dir,
     files: std.ArrayList([]const u8),
@@ -30,6 +31,9 @@ pub fn generateReport(ctx: *core.Context, command: []const []const u8, source_fi
     defer scratch_arena.deinit();
     const scratch = scratch_arena.allocator();
 
+    std.fs.cwd().deleteTree(OUT_DIR) catch |err|
+        panic("Cannot delete dir {s}: {}", .{ OUT_DIR, err });
+
     var report_root_dir = std.fs.cwd().makeOpenPath(OUT_DIR, .{}) catch |err| panic("Cannot open dir {s}: {}", .{ OUT_DIR, err });
     defer report_root_dir.close();
 
@@ -40,11 +44,10 @@ pub fn generateReport(ctx: *core.Context, command: []const []const u8, source_fi
         defer _ = scratch_arena.reset(.retain_capacity);
 
         const source_file = source_files[id];
-        const source_dirpath = source_file.dir;
-        const source_filename = source_file.filename;
+        const source_dirpath = path.dirname(source_file.path).?;
+        const source_filename = path.basename(source_file.path);
 
-        const comp_dir = source_file.comp_dir;
-        const source_reldirpath = std.mem.trimLeft(u8, source_dirpath, comp_dir);
+        const source_reldirpath = path.relative(scratch, ctx.cwd, source_dirpath) catch unreachable;
         const report_dirpath = path.join(scratch, &.{ OUT_DIR, source_reldirpath }) catch unreachable;
         const css_dir = std.fs.path.relative(scratch, report_dirpath, OUT_DIR) catch unreachable;
         const css_filepath = path.join(scratch, &.{ css_dir, CSS_DEST_FILE }) catch unreachable;
@@ -52,15 +55,17 @@ pub fn generateReport(ctx: *core.Context, command: []const []const u8, source_fi
 
         const subdir = subdirs.getOrPut(source_dirpath) catch unreachable;
         if (!subdir.found_existing) {
+            std.log.debug("Creating report dir {s}", .{report_dirpath});
             const source_dir = std.fs.cwd().openDir(source_dirpath, .{}) catch |err| panic("Cannot open dir {s}: {}", .{ source_dirpath, err });
             const report_dir = std.fs.cwd().makeOpenPath(report_dirpath, .{}) catch |err| panic("Cannot open dir {s}: {}", .{ report_dirpath, err });
             subdir.value_ptr.* = .{
+                .source_reldirpath = source_reldirpath,
                 .source_dir = source_dir,
                 .report_dir = report_dir,
                 .files = std.ArrayList([]const u8).init(ctx.arena),
             };
         }
-        subdir.value_ptr.files.append(source_file.filename) catch unreachable;
+        subdir.value_ptr.files.append(source_filename) catch unreachable;
 
         const source_content = subdir.value_ptr.source_dir.readFileAlloc(scratch, source_filename, std.math.maxInt(u32)) catch |err| panic("Cannot read file {s}: {}", .{ source_filename, err });
 
@@ -69,6 +74,7 @@ pub fn generateReport(ctx: *core.Context, command: []const []const u8, source_fi
 
         cov_file.writer().print("{}", .{
             SourceFileReport{
+                .ctx = ctx,
                 .arena = scratch,
                 .css_path = css_filepath,
                 .command = command,
@@ -83,26 +89,48 @@ pub fn generateReport(ctx: *core.Context, command: []const []const u8, source_fi
     var it = subdirs.iterator();
     while (it.next()) |entry| {
         const index_file = entry.value_ptr.report_dir.createFile("index.html", .{}) catch unreachable;
-        index_file.writer().print(
+        index_file.writer().print("{}", .{
+            IndexFile{
+                .cmd = command,
+                .source_reldirpath = entry.value_ptr.source_reldirpath,
+                .files = entry.value_ptr.files.items,
+            },
+        }) catch unreachable;
+    }
+}
+
+pub const IndexFile = struct {
+    cmd: []const []const u8,
+    source_reldirpath: []const u8,
+    files: []const []const u8,
+
+    pub fn format(self: IndexFile, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+        _ = options;
+        try writer.print(
             \\<html>
             \\<head>
             \\<title>{s}</title>
             \\</head>
             \\<body>
+            \\<h1>{s}</h1>
             \\<ul>
             \\{}
             \\</ul>
             \\</body>
             \\</html>
         , .{
-            entry.key_ptr.*,
+            self.cmd[0],
+            if (self.source_reldirpath.len == 0) "All files" else self.source_reldirpath,
             ReportList{
-                .files = entry.value_ptr.files.items,
+                .files = self.files,
             },
-        }) catch unreachable;
+        });
     }
-}
+};
+
 pub const SourceFileReport = struct {
+    ctx: *core.Context,
     arena: std.mem.Allocator,
     css_path: []const u8,
     command: []const []const u8,
@@ -115,12 +143,12 @@ pub const SourceFileReport = struct {
         _ = fmt;
         _ = options;
 
-        const file_info = self.coverage_info.file_info.get(self.source_id) orelse panic("Cannot get file info for file {s}/{s}", .{ self.source_file.dir, self.source_file.filename });
+        const file_info = self.coverage_info.file_info.get(self.source_id) orelse panic("Cannot get file info for file {s}", .{self.source_file.path});
         const covered_lines: f32 = @floatFromInt(file_info.covered_lines);
         const executable_lines: f32 = @floatFromInt(file_info.executable_lines);
         const command = std.mem.join(self.arena, " ", self.command) catch unreachable;
         try writer.print(@embedFile("assets/file_report.html"), .{
-            .filepath = core.SourceFilepathFmt.init(self.source_file),
+            .filepath = core.SourceFilepathFmt{ .ctx = self.ctx, .source_file = self.source_file },
             .command = command,
             .coverage = covered_lines / executable_lines * 100,
             .covered = covered_lines,

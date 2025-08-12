@@ -5,14 +5,14 @@ const builtin = @import("builtin");
 const posix = @import("posix.zig");
 const native_arch = builtin.target.cpu.arch;
 
-pub const MachMsgOption = struct {
+pub const MsgOption = struct {
     pub const NONE = 0x00000000;
     pub const SEND = 0x00000001;
     pub const RCV = 0x00000002;
     pub const SEND_TIMEOUT = 0x00000010;
     pub const RCV_TIMEOUT = 0x00000100;
 };
-pub const MachPortRight = enum(u32) {
+pub const PortRight = enum(u32) {
     SEND = 0,
     RECEIVE = 1,
     SEND_ONCE = 2,
@@ -23,7 +23,7 @@ pub const MachPortRight = enum(u32) {
     /// Right not implemented
     NUMBER = 6,
 };
-pub const MachMsgType = enum(u32) {
+pub const MsgType = enum(u32) {
     /// Must hold receive right
     MOVE_RECEIVE = 16,
     /// Must hold send right(s)
@@ -140,7 +140,7 @@ pub const VmProt = enum(u8) {
     pub const NONE = 0x00;
 };
 
-pub const MachKernelReturn = enum(i32) {
+pub const KernelReturn = enum(i32) {
     Success = 0,
 
     /// Specified address is not currently valid.
@@ -590,57 +590,21 @@ pub const VMRegionSubmapInfo64 = extern struct {
 };
 pub const VM_REGION_SUBMAP_INFO_COUNT_64 = 16;
 
-pub extern "c" var mach_task_self_: MachPort;
-pub fn taskSelf() MachPort {
-    return mach_task_self_;
+pub fn taskSelf() Port {
+    return internal.mach_task_self_;
 }
 
-pub extern "c" fn task_for_pid(port: MachPort, pid: i32, output: *MachPort) MachKernelReturn;
-pub extern "c" fn mach_vm_region_recurse(task: MachPort, address: *u64, size: *u64, nesting_depth: *u32, info: *VMRegionSubmapInfo64, cnt: *u32) MachKernelReturn;
-pub extern "c" fn mach_vm_read(task: MachPort, address: [*]const u8, size: u64, data: *[*]u8, cnt: *u32) MachKernelReturn;
-pub extern "c" fn mach_vm_read_overwrite(task: MachPort, address: [*]const u8, size: u64, buf: [*]u8, buf_size: *u32) MachKernelReturn;
-pub extern "c" fn mach_vm_write(task: MachPort, address: [*]const u8, data: [*]const u8, cnt: u32) MachKernelReturn;
-pub extern "c" fn mach_vm_protect(task: MachPort, address: [*]const u8, size: u64, set_maximum: bool, new_protection: u32) MachKernelReturn;
-pub extern "c" fn mach_vm_allocate(task: MachPort, address: *usize, size: u64, flags: u32) MachKernelReturn;
-pub extern "c" fn mach_port_allocate(task: MachPort, right: MachPortRight, name: *MachPort) MachKernelReturn;
-pub extern "c" fn mach_port_insert_right(task: MachPort, name: MachPort, poly: MachPort, poly_poly: MachMsgType) MachKernelReturn;
-pub extern "c" fn task_set_exception_ports(task: MachPort, exception_mask: u32, new_port: MachPort, behavior: u32, thread_state_flavor: ThreadStateFlavor) MachKernelReturn;
-pub extern "c" fn task_suspend(target_task: MachPort) MachKernelReturn;
-pub extern "c" fn task_resume(target_task: MachPort) MachKernelReturn;
-pub extern "c" fn thread_get_state(
-    thread: MachPort,
-    flavor: ThreadStateFlavor,
-    state: *ThreadState,
-    count: *u32,
-) MachKernelReturn;
-pub extern "c" fn thread_set_state(
-    thread: MachPort,
-    flavor: ThreadStateFlavor,
-    new_state: *ThreadState,
-    count: u32,
-) MachKernelReturn;
-pub extern "c" fn thread_resume(thread: MachPort) MachKernelReturn;
-pub extern "c" fn mach_msg(
-    msg: ?*anyopaque,
-    option: u32,
-    send_size: u32,
-    rcv_size: u32,
-    rcv_name: MachPort,
-    timeout: u32,
-    notify: MachPort,
-) MachKernelReturn;
-
-pub const MachPort = enum(u32) {
+pub const Port = enum(u32) {
     none = 0,
     _,
 
-    pub fn taskForPid(self: MachPort, pid: posix.PosixPID) !MachPort {
-        var port: MachPort = undefined;
-        try checkKern(task_for_pid(self, @intFromEnum(pid), &port));
+    pub fn taskForPid(self: Port, pid: posix.PID) !Port {
+        var port: Port = undefined;
+        try checkKern(internal.task_for_pid(self, @intFromEnum(pid), &port));
         return port;
     }
 
-    pub fn vmRegionRecurse(self: MachPort, address: usize, depth: u32) !VMRegionRecurseResult {
+    pub fn vmRegionRecurse(self: Port, address: usize, depth: u32) !VMRegionRecurseResult {
         var result: VMRegionRecurseResult = .{
             .address = address,
             .size = 0,
@@ -648,91 +612,91 @@ pub const MachPort = enum(u32) {
             .info = undefined,
             .cnt = VM_REGION_SUBMAP_INFO_COUNT_64,
         };
-        try checkKern(mach_vm_region_recurse(self, &result.address, &result.size, &result.depth, &result.info, &result.cnt));
+        try checkKern(internal.mach_vm_region_recurse(self, &result.address, &result.size, &result.depth, &result.info, &result.cnt));
         return result;
     }
 
-    pub fn readMem(self: MachPort, address: [*]const u8, size: usize) ![]const u8 {
+    pub fn readMem(self: Port, address: [*]const u8, size: usize) ![]const u8 {
         var out: [*]u8 = undefined;
         var bytes_read: u32 = 0;
-        try checkKern(mach_vm_read(self, address, size, &out, &bytes_read));
+        try checkKern(internal.mach_vm_read(self, address, size, &out, &bytes_read));
         return out[0..bytes_read];
     }
 
-    pub fn readMemOverwrite(self: MachPort, address: [*]const u8, size: usize, out: []u8) ![]const u8 {
+    pub fn readMemOverwrite(self: Port, address: [*]const u8, size: usize, out: []u8) ![]const u8 {
         var bytes_read: u32 = 0;
-        try checkKern(mach_vm_read_overwrite(self, address, size, out.ptr, &bytes_read));
+        try checkKern(internal.mach_vm_read_overwrite(self, address, size, out.ptr, &bytes_read));
         assert(bytes_read == size);
         return out;
     }
 
-    pub fn writeMem(self: MachPort, address: [*]const u8, data: []const u8) !void {
-        try checkKern(mach_vm_write(self, address, data.ptr, @intCast(data.len)));
+    pub fn writeMem(self: Port, address: [*]const u8, data: []const u8) !void {
+        try checkKern(internal.mach_vm_write(self, address, data.ptr, @intCast(data.len)));
     }
 
-    pub fn protect(self: MachPort, buf: []const u8, set_maximum: bool, new_protection: u8) !void {
-        try checkKern(mach_vm_protect(self, buf.ptr, buf.len, set_maximum, new_protection));
+    pub fn protect(self: Port, buf: []const u8, set_maximum: bool, new_protection: u8) !void {
+        try checkKern(internal.mach_vm_protect(self, buf.ptr, buf.len, set_maximum, new_protection));
     }
 
-    pub fn portAllocate(self: MachPort, right: MachPortRight) !MachPort {
-        var port: MachPort = undefined;
-        try checkKern(mach_port_allocate(self, right, &port));
+    pub fn portAllocate(self: Port, right: PortRight) !Port {
+        var port: Port = undefined;
+        try checkKern(internal.mach_port_allocate(self, right, &port));
         return port;
     }
 
-    pub fn portInsertRight(self: MachPort, port_name: MachPort, port: MachPort, right: MachMsgType) !void {
-        try checkKern(mach_port_insert_right(self, port_name, port, right));
+    pub fn portInsertRight(self: Port, port_name: Port, port: Port, right: MsgType) !void {
+        try checkKern(internal.mach_port_insert_right(self, port_name, port, right));
     }
 
-    pub fn setExceptionPorts(self: MachPort, exception_mask: EXC.MASK, new_port: MachPort, behavior: u32, thread_state_flavor: ThreadStateFlavor) !void {
-        try checkKern(task_set_exception_ports(self, @bitCast(exception_mask), new_port, behavior, thread_state_flavor));
+    pub fn setExceptionPorts(self: Port, exception_mask: EXC.MASK, new_port: Port, behavior: u32, thread_state_flavor: ThreadStateFlavor) !void {
+        try checkKern(internal.task_set_exception_ports(self, @bitCast(exception_mask), new_port, behavior, thread_state_flavor));
     }
 
-    pub fn @"suspend"(self: MachPort) !void {
-        try checkKern(task_suspend(self));
+    pub fn @"suspend"(self: Port) !void {
+        try checkKern(internal.task_suspend(self));
     }
 
-    pub fn @"resume"(self: MachPort) !void {
-        try checkKern(task_resume(self));
+    pub fn @"resume"(self: Port) !void {
+        try checkKern(internal.task_resume(self));
     }
 
-    pub fn threadGetState(self: MachPort, flavor: ThreadStateFlavor) !ThreadState {
+    pub fn threadGetState(self: Port, flavor: ThreadStateFlavor) !ThreadState {
         var state: ThreadState = undefined;
         var count: u32 = flavor.count();
-        try checkKern(thread_get_state(self, flavor, &state, &count));
+        try checkKern(internal.thread_get_state(self, flavor, &state, &count));
         if (count != flavor.count()) {
             std.log.debug("threadGetState: count: {} != flavor.count(): {}", .{ count, flavor.count() });
         }
         return state;
     }
 
-    pub fn threadSetState(self: MachPort, flavor: ThreadStateFlavor, new_state: *ThreadState) !void {
-        try checkKern(thread_set_state(self, flavor, new_state, flavor.count()));
+    pub fn threadSetState(self: Port, flavor: ThreadStateFlavor, new_state: *ThreadState) !void {
+        try checkKern(internal.thread_set_state(self, flavor, new_state, flavor.count()));
     }
 
-    pub fn receiveMessage(dest: MachPort, timeout: u32, notify: MachPort) !MachMsgRequest {
-        var options: u32 = MachMsgOption.RCV;
+    pub fn receiveMessage(dest: Port, timeout: u32, notify: Port) !MessageRequest {
+        var options: u32 = MsgOption.RCV;
         if (timeout != 0) {
-            options |= MachMsgOption.RCV_TIMEOUT;
+            options |= MsgOption.RCV_TIMEOUT;
         }
-        var msg: MachMsgRequest = undefined;
-        try checkKern(mach_msg(&msg, options, 0, @sizeOf(MachMsgRequest), dest, timeout, notify));
+        var msg: MessageRequest = undefined;
+        try checkKern(internal.mach_msg(&msg, options, 0, @sizeOf(MessageRequest), dest, timeout, notify));
         return msg;
     }
 
-    pub fn sendMessage(dest: MachPort, msg: *MachMsgReply, timeout: u32, notify: MachPort) !void {
-        var options: u32 = MachMsgOption.SEND;
+    pub fn sendMessage(dest: Port, msg: *MessageReply, timeout: u32, notify: Port) !void {
+        var options: u32 = MsgOption.SEND;
         if (timeout != 0) {
-            options |= MachMsgOption.SEND_TIMEOUT;
+            options |= MsgOption.SEND_TIMEOUT;
         }
-        try checkKern(mach_msg(@ptrCast(msg), options, msg.header.size, 0, dest, timeout, notify));
+        try checkKern(internal.mach_msg(@ptrCast(msg), options, msg.header.size, 0, dest, timeout, notify));
     }
 };
 
-pub const MachKernelError = core.ErrorSetFromEnum(MachKernelReturn);
-const kernReturnToErrorMap = core.createEnumToErrorSetTable(MachKernelReturn, MachKernelError);
+pub const KernelError = core.ErrorSetFromEnum(KernelReturn);
+const kernReturnToErrorMap = core.createEnumToErrorSetTable(KernelReturn, KernelError);
 
-pub fn checkKern(ret: MachKernelReturn) !void {
+pub fn checkKern(ret: KernelReturn) !void {
     switch (ret) {
         .Success => {},
         inline else => |tag| {
@@ -782,46 +746,46 @@ pub const NDR_record = extern struct {
     reserved2: u8,
 };
 
-pub const MACH_MSGH_BITS_REMOTE_MASK = 0x0000001f;
-pub fn machMsgRemoteBits(bits: u32) u32 {
-    return bits & MACH_MSGH_BITS_REMOTE_MASK;
+pub const MSGH_BITS_REMOTE_MASK = 0x0000001f;
+pub fn messageRemoteBits(bits: u32) u32 {
+    return bits & MSGH_BITS_REMOTE_MASK;
 }
 
-pub fn machMsgReplyBits(bits: u32) u32 {
-    return machMsgRemoteBits(bits);
+pub fn messageReplyBits(bits: u32) u32 {
+    return messageRemoteBits(bits);
 }
 
 // Only one for now, not sure if we will need more
-pub const MachMsgId = enum(u32) {
+pub const MessageId = enum(u32) {
     exception_raise = 2405,
     _,
 };
 
-pub const MachMsgRequest = extern union {
-    header: MachMsgHeader,
-    exception_raise: MachMsgRequestExceptionRaise,
+pub const MessageRequest = extern union {
+    header: MessageHeader,
+    exception_raise: MessageRequestExceptionRaise,
     __padding: [128]u8,
 };
 
-pub const MachMsgReply = extern union {
-    header: MachMsgHeader,
-    @"error": MachMsgReplyError,
-    exception_raise: MachMsgReplyExceptionRaise,
+pub const MessageReply = extern union {
+    header: MessageHeader,
+    @"error": MessageReplyError,
+    exception_raise: MessageReplyExceptionRaise,
 };
 
-pub const MachMsgHeader = extern struct {
+pub const MessageHeader = extern struct {
     bits: u32,
     size: u32,
-    remote_port: MachPort,
-    local_port: MachPort,
-    voucher_port: MachPort,
-    id: MachMsgId,
+    remote_port: Port,
+    local_port: Port,
+    voucher_port: Port,
+    id: MessageId,
 
-    pub fn format(self: MachMsgHeader, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: MessageHeader, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
         try writer.print(
-            \\MachMsgHeader{{
+            \\MessageHeader{{
             \\    .bits = {b},
             \\    .size = {},
             \\    .remote_port = {},
@@ -840,33 +804,33 @@ pub const MachMsgHeader = extern struct {
     }
 };
 
-pub const MachMsgBody = extern struct {
+pub const MessageBody = extern struct {
     descriptor_count: u32,
 };
 
-pub const MachMsgPortDescriptor = extern struct {
-    name: MachPort,
+pub const MessagePortDescriptor = extern struct {
+    name: Port,
     __pad1: u8,
     __pad2: u16,
     disposition: u8,
     type: u8,
 };
 
-pub const MachMsgRequestExceptionRaise = extern struct {
-    hdr: MachMsgHeader,
-    body: MachMsgBody,
-    thread: MachMsgPortDescriptor,
-    task: MachMsgPortDescriptor,
+pub const MessageRequestExceptionRaise = extern struct {
+    hdr: MessageHeader,
+    body: MessageBody,
+    thread: MessagePortDescriptor,
+    task: MessagePortDescriptor,
     ndr: NDR_record,
     exception: EXC,
     codeCount: u32,
     code: [2]i64 align(4),
 
-    pub fn format(self: MachMsgRequestExceptionRaise, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: MessageRequestExceptionRaise, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
         try writer.print(
-            \\MachMsgRequestExceptionRaise{{
+            \\MessageRequestExceptionRaise{{
             \\    .thread = {},
             \\    .task = {},
             \\    .exception = {},
@@ -887,16 +851,16 @@ pub const MachMsgRequestExceptionRaise = extern struct {
     }
 };
 
-pub const MachMsgReplyExceptionRaise = extern struct {
-    hdr: MachMsgHeader,
+pub const MessageReplyExceptionRaise = extern struct {
+    hdr: MessageHeader,
     NDR: NDR_record,
-    RetCode: MachKernelReturn,
+    RetCode: KernelReturn,
 
-    pub fn format(self: MachMsgReplyExceptionRaise, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: MessageReplyExceptionRaise, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
         try writer.print(
-            \\MachMsgReplyExceptionRaise{{
+            \\MessageReplyExceptionRaise{{
             \\    .RetCode = {},
             \\}}
         , .{
@@ -905,8 +869,46 @@ pub const MachMsgReplyExceptionRaise = extern struct {
     }
 };
 
-pub const MachMsgReplyError = extern struct {
-    hdr: MachMsgHeader,
+pub const MessageReplyError = extern struct {
+    hdr: MessageHeader,
     NDR: NDR_record,
-    RetCode: MachKernelReturn,
+    RetCode: KernelReturn,
+};
+
+const internal = struct {
+    pub extern "c" var mach_task_self_: Port;
+    pub extern "c" fn task_for_pid(port: Port, pid: i32, output: *Port) KernelReturn;
+    pub extern "c" fn mach_vm_region_recurse(task: Port, address: *u64, size: *u64, nesting_depth: *u32, info: *VMRegionSubmapInfo64, cnt: *u32) KernelReturn;
+    pub extern "c" fn mach_vm_read(task: Port, address: [*]const u8, size: u64, data: *[*]u8, cnt: *u32) KernelReturn;
+    pub extern "c" fn mach_vm_read_overwrite(task: Port, address: [*]const u8, size: u64, buf: [*]u8, buf_size: *u32) KernelReturn;
+    pub extern "c" fn mach_vm_write(task: Port, address: [*]const u8, data: [*]const u8, cnt: u32) KernelReturn;
+    pub extern "c" fn mach_vm_protect(task: Port, address: [*]const u8, size: u64, set_maximum: bool, new_protection: u32) KernelReturn;
+    pub extern "c" fn mach_vm_allocate(task: Port, address: *usize, size: u64, flags: u32) KernelReturn;
+    pub extern "c" fn mach_port_allocate(task: Port, right: PortRight, name: *Port) KernelReturn;
+    pub extern "c" fn mach_port_insert_right(task: Port, name: Port, poly: Port, poly_poly: MsgType) KernelReturn;
+    pub extern "c" fn task_set_exception_ports(task: Port, exception_mask: u32, new_port: Port, behavior: u32, thread_state_flavor: ThreadStateFlavor) KernelReturn;
+    pub extern "c" fn task_suspend(target_task: Port) KernelReturn;
+    pub extern "c" fn task_resume(target_task: Port) KernelReturn;
+    pub extern "c" fn thread_get_state(
+        thread: Port,
+        flavor: ThreadStateFlavor,
+        state: *ThreadState,
+        count: *u32,
+    ) KernelReturn;
+    pub extern "c" fn thread_set_state(
+        thread: Port,
+        flavor: ThreadStateFlavor,
+        new_state: *ThreadState,
+        count: u32,
+    ) KernelReturn;
+    pub extern "c" fn thread_resume(thread: Port) KernelReturn;
+    pub extern "c" fn mach_msg(
+        msg: ?*anyopaque,
+        option: u32,
+        send_size: u32,
+        rcv_size: u32,
+        rcv_name: Port,
+        timeout: u32,
+        notify: Port,
+    ) KernelReturn;
 };

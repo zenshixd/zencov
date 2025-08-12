@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const core = @import("../core.zig");
-const DebugInfo = @import("../file/debug_info.zig");
+const DebugInfo = @import("../debug_info/debug_info.zig");
 
 pub const ByteCodeFormatter = struct {
     at: usize,
@@ -27,27 +27,12 @@ pub const ByteCodeFormatter = struct {
 };
 
 pub const SourceFilepathFmt = struct {
+    ctx: *core.Context,
     source_file: core.SourceFile,
-
-    pub fn init(source_file: core.SourceFile) SourceFilepathFmt {
-        return .{
-            .source_file = source_file,
-        };
-    }
 
     pub fn format(self: SourceFilepathFmt, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
-        const comp_dir = self.source_file.comp_dir;
-        const filename = self.source_file.filename;
-        const dir = self.source_file.dir;
-        const display_dir = std.mem.trimLeft(u8, dir, comp_dir);
-        if (display_dir.len > 0) {
-            try writer.writeAll(display_dir);
-            if (!std.mem.endsWith(u8, display_dir, std.fs.path.sep_str)) {
-                try writer.writeAll(std.fs.path.sep_str);
-            }
-        }
-        try writer.writeAll(filename);
+        try writer.writeAll(core.relativeToCwd(self.ctx.cwd, self.source_file.path));
     }
 };

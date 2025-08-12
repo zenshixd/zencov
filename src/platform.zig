@@ -1,2 +1,2 @@
-pub usingnamespace @import("platform/posix.zig");
-pub usingnamespace @import("platform/mach.zig");
+pub const posix = @import("platform/posix.zig");
+pub const mach = @import("platform/mach.zig");

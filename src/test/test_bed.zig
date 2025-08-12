@@ -6,8 +6,7 @@ const builtin = @import("builtin");
 const core = @import("../core.zig");
 const bp = @import("../breakpoints.zig");
 const cov = @import("../coverage.zig");
-const StringInterner = core.StringInterner;
-const DebugInfo = @import("../file/debug_info.zig");
+const DebugInfo = @import("../debug_info/debug_info.zig");
 const Snapshot = @import("snapshots.zig");
 const expectSnapshotMatchString = Snapshot.expectSnapshotMatchString;
 
@@ -25,8 +24,8 @@ pub fn runTest(exe: []const u8, include_paths: []const []const u8) TestBed {
     var ctx = core.Context.init(std.testing.allocator, arena_allocator.allocator());
 
     const debug_info = DebugInfo.init(&ctx, exe, include_paths);
-    bp.runInstrumentedAndWait(&ctx, &debug_info, &.{exe});
-    const coverage_info = cov.getCoverageInfo(&ctx, &debug_info);
+    const pid = bp.runInstrumentedAndWait(&ctx, &debug_info, &.{exe});
+    const coverage_info = cov.getCoverageInfo(&ctx, pid, &debug_info);
 
     return .{
         .ctx = ctx,
@@ -48,49 +47,58 @@ pub fn expectSourceFiles(self: TestBed, expected: Snapshot) error{ SnapshotMisma
     defer scratch_arena.deinit();
     const scratch = scratch_arena.allocator();
 
-    var dir_graph = std.StringHashMap(std.StringHashMap(void)).init(scratch);
-    for (self.debug_info.source_files) |source_file| {
-        const dir_path = path: {
-            if (path.isAbsolute(source_file.dir)) {
-                break :path path.relative(scratch, source_file.dir, source_file.comp_dir) catch unreachable;
+    const DirGraphEntry = struct {
+        dirs: std.StringHashMap(@This()),
+        files: std.StringHashMap(void),
+
+        pub fn format(entry: @This(), writer: anytype, depth: usize) void {
+            var dir_it = entry.dirs.iterator();
+            while (dir_it.next()) |dir| {
+                for (0..depth) |_| {
+                    writer.writeAll("  ") catch unreachable;
+                }
+                writer.print("{s}/\n", .{dir.key_ptr.*}) catch unreachable;
+                dir.value_ptr.format(writer, depth + 1);
             }
 
-            break :path source_file.dir;
-        };
-        const dir_result = dir_graph.getOrPut(dir_path) catch unreachable;
-        if (!dir_result.found_existing) {
-            dir_result.value_ptr.* = std.StringHashMap(void).init(scratch);
+            var files_it = entry.files.iterator();
+            while (files_it.next()) |file| {
+                for (0..depth) |_| {
+                    writer.writeAll("  ") catch unreachable;
+                }
+                writer.print("{s}\n", .{file.key_ptr.*}) catch unreachable;
+            }
         }
-        dir_result.value_ptr.put(source_file.filename, {}) catch unreachable;
+
+        pub fn ensureParentDirs(entry: *@This(), allocator: std.mem.Allocator, dir_path: []const u8) *@This() {
+            var cur_entry = entry;
+            var it = path.componentIterator(dir_path) catch |err| panic("Cannot iterate components of {s}: {s}", .{ dir_path, err });
+            while (it.next()) |component| {
+                const comp_entry = cur_entry.dirs.getOrPut(component.name) catch unreachable;
+                if (!comp_entry.found_existing) {
+                    comp_entry.value_ptr.* = .{
+                        .dirs = std.StringHashMap(@This()).init(allocator),
+                        .files = std.StringHashMap(void).init(allocator),
+                    };
+                }
+                cur_entry = comp_entry.value_ptr;
+            }
+
+            return cur_entry;
+        }
+    };
+
+    var root_entry = DirGraphEntry{
+        .dirs = std.StringHashMap(DirGraphEntry).init(scratch),
+        .files = std.StringHashMap(void).init(scratch),
+    };
+    for (self.debug_info.source_files) |source_file| {
+        var nested_entry = root_entry.ensureParentDirs(scratch, path.dirname(source_file.path).?);
+        nested_entry.files.put(path.basename(source_file.path), {}) catch unreachable;
     }
 
     const writer = received_text.writer();
-    var index: usize = 0;
-    var it = dir_graph.iterator();
-    while (it.next()) |entry| : (index += 1) {
-        if (index > 0) {
-            writer.writeByte('\n') catch unreachable;
-        }
-
-        const is_root = entry.key_ptr.*.len == 0;
-        if (is_root) {
-            writer.writeAll("~/") catch unreachable;
-        } else {
-            writer.print("{s}/", .{entry.key_ptr.*}) catch unreachable;
-        }
-        if (entry.value_ptr.count() > 0) {
-            writer.writeAll("\n") catch unreachable;
-            var file_index: usize = 0;
-            var file_it = entry.value_ptr.iterator();
-            while (file_it.next()) |file_entry| : (file_index += 1) {
-                if (file_index > 0) {
-                    writer.writeAll("\n") catch unreachable;
-                }
-                writer.print("  {s}", .{file_entry.key_ptr.*}) catch unreachable;
-            }
-        }
-    }
-
+    root_entry.format(writer, 0);
     try expectSnapshotMatchString(received_text.items, expected);
 }
 
@@ -109,27 +117,20 @@ pub fn expectCoverageInfo(self: TestBed, expected: Snapshot) error{ SnapshotMism
             writer.writeByte('\n') catch unreachable;
         }
 
-        const file_info = self.coverage_info.file_info.get(@enumFromInt(i)) orelse panic("Cannot get file info for file {s}/{s}", .{ source_file.dir, source_file.filename });
-        const filepath = path: {
-            if (!path.isAbsolute(source_file.dir)) {
-                break :path path.join(scratch, &.{ source_file.comp_dir, source_file.dir, source_file.filename }) catch unreachable;
-            }
-
-            break :path path.join(scratch, &.{ source_file.dir, source_file.filename }) catch unreachable;
-        };
-
+        const file_info = self.coverage_info.file_info.get(@enumFromInt(i)) orelse panic("Cannot get file info for file {s}", .{source_file.path});
+        const display_path = core.relativeToCwd(self.ctx.cwd, source_file.path);
         writer.print(
             \\File: {s}
             \\Line coverage: {d}/{d}
             \\
         , .{
-            filepath,
+            display_path,
             file_info.covered_lines,
             file_info.executable_lines,
         }) catch unreachable;
 
-        const fd = fs.openFileAbsolute(filepath, .{ .mode = .read_only }) catch |err| panic("Cannot open file {s}: {}", .{ filepath, err });
-        const content = fd.readToEndAlloc(scratch, std.math.maxInt(u32)) catch |err| panic("Cannot read file {s}: {}", .{ filepath, err });
+        const fd = fs.openFileAbsolute(source_file.path, .{ .mode = .read_only }) catch |err| panic("Cannot open file {s}: {}", .{ source_file.path, err });
+        const content = fd.readToEndAlloc(scratch, std.math.maxInt(u32)) catch |err| panic("Cannot read file {s}: {}", .{ source_file.path, err });
 
         var index: i32 = 1;
         const line_count = std.mem.count(u8, content, "\n") + 1;

@@ -73,27 +73,27 @@ pub fn init(ctx: *core.Context, exec_file: []const u8, include_paths: []const []
                 if (line.line == 0) continue;
                 // TODO:: is this always line.file - 1 ? or is it DWARF5 (or DWARF4?) thing? i dont remember
                 const file = prog.files.items[line.file - 1];
-                var dir_path = prog.directories.items[file.dir_index].path;
-                if (!path.isAbsolute(dir_path)) {
-                    dir_path = path.join(loop, &.{ comp_dir, dir_path }) catch unreachable;
-                }
-                if (!hasIncludePath(dir_path, include_paths)) {
+                const dir = prog.directories.items[file.dir_index].path;
+
+                const fullpath = path: {
+                    if (path.isAbsolute(dir)) {
+                        break :path std.mem.concat(loop, u8, &.{ dir, path.sep_str, file.path }) catch unreachable;
+                    }
+
+                    break :path std.mem.concat(loop, u8, &.{ comp_dir, path.sep_str, dir, path.sep_str, file.path }) catch unreachable;
+                };
+                if (!hasIncludePath(include_paths, fullpath)) {
                     continue;
                 }
-
-                const dir = prog.directories.items[file.dir_index].path;
                 const source_file_id = id: {
-                    if (source_files_map.get(.{ .comp_dir = comp_dir, .dir = dir, .filename = file.path })) |id| {
+                    if (source_files_map.get(.{ .path = fullpath })) |id| {
                         break :id id;
                     }
 
-                    std.log.debug("Adding source file {s}/{s}", .{ dir, file.path });
+                    const new_source_file = core.SourceFile{ .path = ctx.arena.dupe(u8, fullpath) catch unreachable };
+                    std.log.debug("Adding source file {}", .{core.SourceFilepathFmt{ .ctx = ctx, .source_file = new_source_file }});
                     const new_source_file_id: core.SourceFileId = @enumFromInt(source_files_map.count());
-                    source_files_map.put(.{
-                        .comp_dir = ctx.arena.dupe(u8, comp_dir) catch unreachable,
-                        .dir = ctx.arena.dupe(u8, dir) catch unreachable,
-                        .filename = ctx.arena.dupe(u8, file.path) catch unreachable,
-                    }, new_source_file_id) catch unreachable;
+                    source_files_map.put(new_source_file, new_source_file_id) catch unreachable;
                     break :id new_source_file_id;
                 };
 
@@ -251,7 +251,7 @@ pub fn parseDwarfSection(scratch: std.mem.Allocator, content: []const u8, sectio
     });
 }
 
-fn hasIncludePath(dir: []const u8, include_paths: []const []const u8) bool {
+fn hasIncludePath(include_paths: []const []const u8, dir: []const u8) bool {
     for (include_paths) |include_path| {
         if (std.mem.indexOf(u8, dir, include_path) != null) {
             return true;
