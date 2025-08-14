@@ -1,9 +1,15 @@
 const std = @import("std");
-const path = std.fs.path;
-const panic = std.debug.panic;
 const builtin = @import("builtin");
 const native_endian = builtin.cpu.arch.endian();
+
 const core = @import("../core.zig");
+const debug = @import("../core/debug.zig");
+const heap = @import("../core/heap.zig");
+const crypto = @import("../core/crypto.zig");
+const fmt = @import("../core/fmt.zig");
+const path = @import("../core/path.zig");
+const logger = @import("../core/logger.zig");
+const mem = @import("../core/mem.zig");
 const macho = @import("./macho.zig");
 const Dwarf = @import("./dwarf.zig");
 const DW = @import("./dwarf.zig").DW;
@@ -13,42 +19,81 @@ const Section = @import("./dwarf.zig").Section;
 const DebugInfo = @This();
 const PAGEZERO_OFFSET = 0x100000000;
 
-source_files: []core.SourceFile,
-line_info: core.LineInfoMap,
+pub const IncludeMode = enum {
+    only_comp_dir,
+    all,
+};
+pub const SourceFileId = enum(u32) {
+    _,
+};
+
+pub const SourceFile = struct {
+    path: []const u8,
+
+    pub const Context = struct {
+        pub fn hash(self: @This(), k: SourceFile) u32 {
+            _ = self;
+            return @truncate(crypto.Wyhash.hash(0, k.path));
+        }
+        pub fn eql(self: @This(), a: SourceFile, b: SourceFile, b_index: usize) bool {
+            _ = self;
+            _ = b_index;
+            return mem.eql(u8, a.path, b.path);
+        }
+    };
+};
+
+pub const SourceFileMap = std.AutoArrayHashMap(SourceFile, SourceFileId);
+
+pub const LineInfo = struct {
+    source_file: SourceFileId,
+    line: i32,
+    col: u32,
+    address: usize,
+};
+
+pub const LineInfoKey = struct {
+    source_file: SourceFileId,
+    line: i32,
+};
+pub const LineInfoMap = std.AutoArrayHashMap(LineInfoKey, LineInfo);
+
+source_files: []SourceFile,
+line_info: LineInfoMap,
 
 pub fn init(ctx: *core.Context, exec_file: []const u8, include_paths: []const []const u8) DebugInfo {
-    var scratch_arena = std.heap.ArenaAllocator.init(ctx.gpa);
+    var scratch_arena = heap.ArenaAllocator.init();
     defer scratch_arena.deinit();
     const scratch = scratch_arena.allocator();
 
-    var source_files_map = std.ArrayHashMap(core.SourceFile, core.SourceFileId, core.SourceFile.Context, false).init(scratch);
-    var line_info = core.LineInfoMap.init(ctx.arena);
+    var source_files_map = std.ArrayHashMap(SourceFile, SourceFileId, SourceFile.Context, false).init(scratch);
+    var line_info = LineInfoMap.init(ctx.arena);
 
     var dwarfs = std.ArrayList(Dwarf).init(scratch);
     const parsed_exec = parseMachoBinary(scratch, exec_file) catch |err| switch (err) {
-        error.FileNotFound => panic("Cannot open executable file {s}: {}", .{ exec_file, err }),
+        error.FileNotFound => debug.panic("Cannot open executable file {s}: {}", .{ exec_file, err }),
     };
-    std.log.debug(".o file count: {d}", .{parsed_exec.obj_files.len});
+    logger.debug(".o file count: {d}", .{parsed_exec.obj_files.len});
     if (parsed_exec.dwarf) |d| {
         dwarfs.append(d) catch unreachable;
     }
 
-    std.log.debug("DIE count: {d}", .{dwarfs.items.len});
+    logger.debug("DIE count: {d}", .{dwarfs.items.len});
 
-    var loop_arena = std.heap.ArenaAllocator.init(ctx.gpa);
+    var loop_arena = heap.ArenaAllocator.init();
     defer loop_arena.deinit();
     const loop = loop_arena.allocator();
-    var filenames_map = std.AutoArrayHashMap(struct { dir: u32, file: u32 }, core.SourceFileId).init(scratch);
+    var filenames_map = std.AutoArrayHashMap(struct { dir: u32, file: u32 }, SourceFileId).init(scratch);
     for (parsed_exec.obj_files) |o_file| {
-        std.log.debug("Parsing .o file: {s}", .{o_file});
+        logger.debug("Parsing .o file: {s}", .{o_file});
         const parsed_obj_file = parseMachoBinary(scratch, o_file) catch |err| switch (err) {
             error.FileNotFound => {
-                std.log.debug("Cannot open .o file: {s}", .{o_file});
+                logger.debug("Cannot open .o file: {s}", .{o_file});
                 continue;
             },
         };
         var di = parsed_obj_file.dwarf orelse {
-            std.log.debug("Failed to parse .o file: {s}", .{o_file});
+            logger.debug("Failed to parse .o file: {s}", .{o_file});
             continue;
         };
 
@@ -60,16 +105,16 @@ pub fn init(ctx: *core.Context, exec_file: []const u8, include_paths: []const []
 
             if (entry.tag_id != DW.TAG.compile_unit) continue;
 
-            const comp_dir_attr = entry.getAttr(DW.AT.comp_dir) orelse panic("Cannot retrieve compilation directory", .{});
-            const comp_dir = comp_dir_attr.value.getString(&di) catch |err| panic("Cannot retrieve copilation dir value: {}", .{err});
+            const comp_dir_attr = entry.getAttr(DW.AT.comp_dir) orelse debug.panic("Cannot retrieve compilation directory", .{});
+            const comp_dir = comp_dir_attr.value.getString(&di) catch |err| debug.panic("Cannot retrieve copilation dir value: {}", .{err});
 
             var prog = di.getLineNumberProgram(scratch, entry) catch |err|
-                panic("Couldnt get line number information: {}", .{err});
+                debug.panic("Couldnt get line number information: {}", .{err});
 
             while (prog.hasNext()) {
                 defer _ = loop_arena.reset(.retain_capacity);
 
-                const line = prog.next() catch |err| panic("Cannot read line number information: {}", .{err}) orelse continue;
+                const line = prog.next() catch |err| debug.panic("Cannot read line number information: {}", .{err}) orelse continue;
                 if (line.line == 0) continue;
                 // TODO:: is this always line.file - 1 ? or is it DWARF5 (or DWARF4?) thing? i dont remember
                 const file = prog.files.items[line.file - 1];
@@ -90,9 +135,9 @@ pub fn init(ctx: *core.Context, exec_file: []const u8, include_paths: []const []
                         break :id id;
                     }
 
-                    const new_source_file = core.SourceFile{ .path = ctx.arena.dupe(u8, fullpath) catch unreachable };
-                    std.log.debug("Adding source file {}", .{core.SourceFilepathFmt{ .ctx = ctx, .source_file = new_source_file }});
-                    const new_source_file_id: core.SourceFileId = @enumFromInt(source_files_map.count());
+                    const new_source_file = SourceFile{ .path = ctx.arena.dupe(u8, fullpath) catch unreachable };
+                    logger.debug("Adding source file {}", .{fmt.SourceFilepathFmt{ .ctx = ctx, .source_file = new_source_file }});
+                    const new_source_file_id: SourceFileId = @enumFromInt(source_files_map.count());
                     source_files_map.put(new_source_file, new_source_file_id) catch unreachable;
                     break :id new_source_file_id;
                 };
@@ -113,7 +158,7 @@ pub fn init(ctx: *core.Context, exec_file: []const u8, include_paths: []const []
         }
     }
 
-    const source_files = ctx.arena.dupe(core.SourceFile, source_files_map.keys()) catch unreachable;
+    const source_files = ctx.arena.dupe(SourceFile, source_files_map.keys()) catch unreachable;
     return .{
         .source_files = source_files,
         .line_info = line_info,
@@ -129,13 +174,13 @@ pub const MachOBinary = struct {
 pub fn parseMachoBinary(scratch: std.mem.Allocator, filename: []const u8) error{FileNotFound}!MachOBinary {
     const file = std.fs.cwd().openFile(filename, .{}) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
-        else => panic("Cannot open file {s}: {}", .{ filename, err }),
+        else => debug.panic("Cannot open file {s}: {}", .{ filename, err }),
     };
-    const content = file.readToEndAlloc(scratch, std.math.maxInt(u32)) catch |err| panic("Cannot load file {s}: {}", .{ filename, err });
+    const content = file.readToEndAlloc(scratch, std.math.maxInt(u32)) catch |err| debug.panic("Cannot load file {s}: {}", .{ filename, err });
 
     const header = std.mem.bytesToValue(macho.MachOHeader64, content);
     if (header.magic != macho.MH_MAGIC_64) {
-        panic("Unsupported binary", .{});
+        debug.panic("Unsupported binary", .{});
     }
 
     var it = macho.LoadCommandIterator{
@@ -182,7 +227,7 @@ pub fn parseMachoBinary(scratch: std.mem.Allocator, filename: []const u8) error{
 
     const dwarf = Dwarf.init(scratch, sections) catch |err| switch (err) {
         error.NoDebugInfoSection, error.NoDebugAbbrevSection => null,
-        else => panic("Cannot parse dwarf info: {}", .{err}),
+        else => debug.panic("Cannot parse dwarf info: {}", .{err}),
     };
 
     return MachOBinary{
@@ -196,13 +241,13 @@ pub fn calcOFileOffset(parsed_exec: MachOBinary, parsed_obj_file: MachOBinary) u
     for (parsed_obj_file.symbols) |sym| {
         for (parsed_exec.symbols) |exec_sym| {
             if (std.mem.eql(u8, sym.name, exec_sym.name)) {
-                std.log.debug("Found matching symbols: {} and {}", .{ sym, exec_sym });
+                logger.debug("Found matching symbols: {} and {}", .{ sym, exec_sym });
                 return exec_sym.address - sym.address - PAGEZERO_OFFSET;
             }
         }
     }
 
-    panic("Cannot find offset", .{});
+    debug.panic("Cannot find offset", .{});
 }
 
 pub fn getOFilepath(scratch: std.mem.Allocator, binary_filepath: []const u8, sym_name: []const u8) []const u8 {
@@ -229,8 +274,8 @@ pub const Symbol = struct {
     name: []const u8,
     address: usize,
 
-    pub fn format(self: Symbol, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
+    pub fn format(self: Symbol, comptime text: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = text;
         _ = options;
         try writer.print("Symbol{{ .name = {s}, .address = 0x{x} }}", .{ self.name, self.address });
     }

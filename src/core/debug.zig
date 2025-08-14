@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("./io.zig");
 
 pub fn assert(cond: bool) void {
     if (!cond) {
@@ -23,4 +24,8 @@ pub fn panic(comptime fmt: []const u8, args: anytype) noreturn {
         },
     };
     std.debug.defaultPanic(msg, @returnAddress());
+}
+
+pub fn print(comptime fmt: []const u8, args: anytype) void {
+    io.getStderr().sink().print(fmt, args) catch return;
 }

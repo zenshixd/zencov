@@ -2,6 +2,7 @@
 const std = @import("std");
 const path = std.fs.path;
 const core = @import("core.zig");
+const fmt = @import("core/fmt.zig");
 const inst = @import("instrumentation.zig");
 const DebugInfo = @import("./debug_info/debug_info.zig");
 
@@ -17,7 +18,7 @@ pub fn runInstrumentedAndWait(ctx: *core.Context, debug_info: *const DebugInfo, 
     while (line_it.next()) |entry| {
         const src_file = debug_info.source_files[@intFromEnum(entry.value_ptr.source_file)];
         std.log.debug("Setting breakpoint in {} at line {d} at address {x}", .{
-            core.SourceFilepathFmt{
+            fmt.SourceFilepathFmt{
                 .ctx = ctx,
                 .source_file = src_file,
             },

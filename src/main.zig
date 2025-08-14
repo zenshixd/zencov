@@ -7,11 +7,11 @@
 const builtin = @import("builtin");
 
 const core = @import("core.zig");
-const mem = @import("core/mem.zig");
+const heap = @import("core/heap.zig");
 const debug = @import("core/debug.zig");
 const logger = @import("core/logger.zig");
 const process = @import("core/process.zig");
-const platform = @import("platform.zig");
+
 const report = @import("report.zig");
 const bp = @import("breakpoints.zig");
 const cov = @import("coverage.zig");
@@ -22,26 +22,23 @@ const snap = @import("test/snapshots.zig").snap;
 
 const ZENCOV_INCLUDE_PATHS = &[_][]const u8{"zencov/"};
 pub fn main() void {
-    var debug_allocator = mem.GeneralAllocator.init();
-    defer _ = debug_allocator.deinit();
-    var arena_allocator = mem.ArenaAllocator.init();
-    defer {
-        if (builtin.mode == .Debug) {
-            arena_allocator.deinit();
-        }
-    }
+    var general_allocator = heap.GeneralAllocator.init();
+    defer _ = general_allocator.deinit();
 
-    var ctx = core.Context.init(debug_allocator.allocator(), arena_allocator.allocator());
+    var arena_allocator = heap.ArenaAllocator.init();
+
+    var ctx = core.Context.init(general_allocator.allocator(), arena_allocator.allocator());
 
     const args = process.argsAlloc(ctx.arena) catch unreachable;
     const tracee_cmd = args[1..];
     const debug_info = DebugInfo.init(&ctx, tracee_cmd[0], ZENCOV_INCLUDE_PATHS);
-    const pid = bp.runInstrumentedAndWait(&ctx, &debug_info, tracee_cmd);
-    const coverage_info = cov.getCoverageInfo(&ctx, pid, &debug_info);
-    const coverage_info2 = cov.getCoverageInfo2(&ctx, pid, &debug_info);
-    printDirEntry(&coverage_info2);
-
-    report.generateReport(&ctx, tracee_cmd, debug_info.source_files, coverage_info);
+    _ = debug_info;
+    //     const pid = bp.runInstrumentedAndWait(&ctx, &debug_info, tracee_cmd);
+    //     const coverage_info = cov.getCoverageInfo(&ctx, pid, &debug_info);
+    //     const coverage_info2 = cov.getCoverageInfo2(&ctx, pid, &debug_info);
+    //     printDirEntry(&coverage_info2);
+    //
+    //     report.generateReport(&ctx, tracee_cmd, debug_info.source_files, coverage_info);
 }
 
 pub fn printDirEntry(entry: *const cov.DirEntry) void {

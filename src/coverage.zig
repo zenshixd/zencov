@@ -1,7 +1,7 @@
 const std = @import("std");
 const panic = std.debug.panic;
-const path = std.fs.path;
 const core = @import("core.zig");
+const path = @import("core/path.zig");
 const inst = @import("instrumentation.zig");
 const DebugInfo = @import("./debug_info/debug_info.zig");
 
@@ -17,13 +17,13 @@ pub const LineStatus = enum {
 };
 
 pub const CoverageInfo = struct {
-    file_info: std.AutoArrayHashMap(core.SourceFileId, FileInfo),
-    line_info: std.AutoArrayHashMap(core.LineInfoKey, LineStatus),
+    file_info: std.AutoArrayHashMap(DebugInfo.SourceFileId, FileInfo),
+    line_info: std.AutoArrayHashMap(DebugInfo.LineInfoKey, LineStatus),
 };
 
 pub fn getCoverageInfo(ctx: *core.Context, pid: *inst.PID, debug_info: *const DebugInfo) CoverageInfo {
-    var file_info = std.AutoArrayHashMap(core.SourceFileId, FileInfo).init(ctx.arena);
-    var line_info = std.AutoArrayHashMap(core.LineInfoKey, LineStatus).init(ctx.arena);
+    var file_info = std.AutoArrayHashMap(DebugInfo.SourceFileId, FileInfo).init(ctx.arena);
+    var line_info = std.AutoArrayHashMap(DebugInfo.LineInfoKey, LineStatus).init(ctx.arena);
     line_info.ensureTotalCapacity(debug_info.line_info.count()) catch unreachable;
 
     var it = debug_info.line_info.iterator();
@@ -111,7 +111,7 @@ pub fn getCoverageInfo2(ctx: *core.Context, pid: *inst.PID, debug_info: *const D
     var it = debug_info.line_info.iterator();
     while (it.next()) |entry| {
         const source_file = debug_info.source_files[@intFromEnum(entry.value_ptr.source_file)];
-        const relpath = core.relativeToCwd(ctx.cwd, source_file.path);
+        const relpath = path.relativeToCwd(ctx.cwd, source_file.path);
 
         var dir_entry = root_entry.ensureParentDirs(ctx.arena, path.dirname(relpath) orelse "");
         var file_entry = dir_entry.files.getOrPut(path.basename(relpath)) catch unreachable;

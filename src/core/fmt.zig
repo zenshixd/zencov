@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const core = @import("../core.zig");
+const path = @import("../core/path.zig");
 const DebugInfo = @import("../debug_info/debug_info.zig");
 
 pub const ByteCodeFormatter = struct {
@@ -28,11 +29,11 @@ pub const ByteCodeFormatter = struct {
 
 pub const SourceFilepathFmt = struct {
     ctx: *core.Context,
-    source_file: core.SourceFile,
+    source_file: DebugInfo.SourceFile,
 
     pub fn format(self: SourceFilepathFmt, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
-        try writer.writeAll(core.relativeToCwd(self.ctx.cwd, self.source_file.path));
+        try writer.writeAll(path.relativeToCwd(self.ctx.cwd, self.source_file.path));
     }
 };

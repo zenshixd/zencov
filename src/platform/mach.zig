@@ -1,5 +1,6 @@
 const std = @import("std");
 const core = @import("../core.zig");
+const meta = @import("../core/meta.zig");
 const assert = std.debug.assert;
 const builtin = @import("builtin");
 const posix = @import("posix.zig");
@@ -594,6 +595,18 @@ pub fn taskSelf() Port {
     return internal.mach_task_self_;
 }
 
+pub const AllocateFlags = core.EnumMask(enum(i32) {
+    anywhere = 1,
+    purgable = 2,
+    chunk_4gb = 4,
+    random_addr = 8,
+    no_cache = 16,
+    resilient_codesign = 32,
+    resilient_media = 64,
+    permanent = 128,
+    overwrite = 0x4000,
+});
+
 pub const Port = enum(u32) {
     none = 0,
     _,
@@ -602,6 +615,16 @@ pub const Port = enum(u32) {
         var port: Port = undefined;
         try checkKern(internal.task_for_pid(self, @intFromEnum(pid), &port));
         return port;
+    }
+
+    pub fn vmAllocate(self: Port, size: usize, flags: AllocateFlags) ![]u8 {
+        var address: usize = undefined;
+        try checkKern(internal.mach_vm_allocate(self, &address, size, @bitCast(flags)));
+        return @as([*]u8, @ptrFromInt(address))[0..size];
+    }
+
+    pub fn vmDeallocate(self: Port, address: []const u8) !void {
+        try checkKern(internal.mach_vm_deallocate(self, @intFromPtr(address.ptr), address.len));
     }
 
     pub fn vmRegionRecurse(self: Port, address: usize, depth: u32) !VMRegionRecurseResult {
@@ -693,8 +716,8 @@ pub const Port = enum(u32) {
     }
 };
 
-pub const KernelError = core.ErrorSetFromEnum(KernelReturn);
-const kernReturnToErrorMap = core.createEnumToErrorSetTable(KernelReturn, KernelError);
+pub const KernelError = meta.ErrorSetFromEnum(KernelReturn);
+const kernReturnToErrorMap = meta.createEnumToErrorSetTable(KernelReturn, KernelError);
 
 pub fn checkKern(ret: KernelReturn) !void {
     switch (ret) {
@@ -878,12 +901,13 @@ pub const MessageReplyError = extern struct {
 const internal = struct {
     pub extern "c" var mach_task_self_: Port;
     pub extern "c" fn task_for_pid(port: Port, pid: i32, output: *Port) KernelReturn;
+    pub extern "c" fn mach_vm_allocate(task: Port, address: *usize, size: usize, flags: u32) KernelReturn;
+    pub extern "c" fn mach_vm_deallocate(task: Port, address: usize, size: usize) KernelReturn;
     pub extern "c" fn mach_vm_region_recurse(task: Port, address: *u64, size: *u64, nesting_depth: *u32, info: *VMRegionSubmapInfo64, cnt: *u32) KernelReturn;
     pub extern "c" fn mach_vm_read(task: Port, address: [*]const u8, size: u64, data: *[*]u8, cnt: *u32) KernelReturn;
     pub extern "c" fn mach_vm_read_overwrite(task: Port, address: [*]const u8, size: u64, buf: [*]u8, buf_size: *u32) KernelReturn;
     pub extern "c" fn mach_vm_write(task: Port, address: [*]const u8, data: [*]const u8, cnt: u32) KernelReturn;
     pub extern "c" fn mach_vm_protect(task: Port, address: [*]const u8, size: u64, set_maximum: bool, new_protection: u32) KernelReturn;
-    pub extern "c" fn mach_vm_allocate(task: Port, address: *usize, size: u64, flags: u32) KernelReturn;
     pub extern "c" fn mach_port_allocate(task: Port, right: PortRight, name: *Port) KernelReturn;
     pub extern "c" fn mach_port_insert_right(task: Port, name: Port, poly: Port, poly_poly: MsgType) KernelReturn;
     pub extern "c" fn task_set_exception_ports(task: Port, exception_mask: u32, new_port: Port, behavior: u32, thread_state_flavor: ThreadStateFlavor) KernelReturn;

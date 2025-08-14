@@ -12,5 +12,12 @@ pub fn ArrayList(comptime T: type) type {
                 .allocator = allocator,
             };
         }
+
+        pub fn initWithCapacity(allocator: mem.Allocator, capacity: usize) error{OutOfMemory}!ArrayList(T) {
+            return .{
+                .arr = try std.ArrayListUnmanaged(T).initCapacity(allocator, capacity),
+                .allocator = allocator,
+            };
+        }
     };
 }
