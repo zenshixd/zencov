@@ -4,7 +4,7 @@ const process = @import("./core/process.zig");
 const builtin = @import("builtin");
 
 const inst = @import("./instrumentation.zig");
-const mach = @import("./platform.zig").mach;
+const mach = @import("./core/platform.zig").mach;
 
 pub const Context = struct {
     gpa: heap.Allocator,

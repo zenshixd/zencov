@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 
-const mach = @import("../platform.zig").mach;
+const mach = @import("../core/platform.zig").mach;
 
 pub const MH_MAGIC = 0xfeedface;
 pub const MH_MAGIC_64 = 0xfeedfacf;

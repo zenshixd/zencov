@@ -6,7 +6,7 @@ const builtin = @import("builtin");
 const native_arch = builtin.target.cpu.arch;
 
 const core = @import("../core.zig");
-const platform = @import("../platform.zig");
+const platform = @import("../core/platform.zig");
 const posix = platform.posix;
 const mach = platform.mach;
 
