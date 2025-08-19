@@ -1,8 +1,8 @@
 const std = @import("std");
 const debug = @import("debug.zig");
 
-const Sink = @import("io/sink.zig");
-const Source = @import("io/source.zig");
+pub const Sink = @import("io/sink.zig");
+pub const Source = @import("io/source.zig");
 
 pub const StdIo = struct {
     const WriteError = error{
@@ -24,22 +24,37 @@ pub const StdIo = struct {
         NoDevice,
         Unexpected,
     };
+
+    var buf: [4096]u8 = undefined;
+    interface: Sink = Sink{
+        .buf = &buf,
+        .pos = 0,
+        .drainFn = sinkDrain,
+    },
     handle: std.fs.File,
 
-    pub fn write(self: StdIo, bytes: []const u8) WriteError!usize {
-        return self.handle.write(bytes);
+    pub fn writeAll(self: *StdIo, bytes: []const u8) WriteError!void {
+        return self.interface.writeAll(bytes);
     }
 
-    pub fn sinkWrite(ctx: *anyopaque, bytes: []const u8) Sink.WriteError!usize {
-        const self: *StdIo = @ptrCast(@alignCast(ctx));
-        return self.write(bytes) catch |err| switch (err) {
+    pub fn print(self: *StdIo, comptime fmt: []const u8, args: anytype) WriteError!void {
+        return self.interface.print(fmt, args);
+    }
+
+    pub fn flush(self: *StdIo) WriteError!void {
+        return self.interface.flush();
+    }
+
+    pub fn sinkDrain(s: *Sink, bytes: []const u8) Sink.WriteError!usize {
+        const self: *StdIo = @fieldParentPtr("interface", s);
+        return self.handle.write(bytes) catch |err| switch (err) {
             error.NoSpaceLeft => return error.NoSpaceLeft,
-            else => |e| debug.panic("Cannot write to stdout: {}", .{e}),
+            else => |e| debug.panic("Cannot write to stdio: {}", .{e}),
         };
     }
 
-    pub fn sink(self: *StdIo) Sink {
-        return Sink.init(@ptrCast(self), StdIo.sinkWrite);
+    pub fn sink(self: *StdIo) *Sink {
+        return &self.interface;
     }
 };
 

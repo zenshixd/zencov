@@ -1,41 +1,65 @@
 const std = @import("std");
-
+const fmt = @import("../fmt.zig");
 const math = @import("../math.zig");
 
 const Sink = @This();
 pub const WriteError = error{NoSpaceLeft};
-pub const Error = WriteError;
 
-buf: [4096]u8,
+buf: []u8,
 pos: usize,
 
-ctx: *anyopaque,
-writeFn: *const fn (ctx: *anyopaque, bytes: []const u8) WriteError!usize,
+drainFn: *const fn (sink: *Sink, bytes: []const u8) WriteError!usize,
 
-pub fn init(ctx: *anyopaque, writeFn: *const fn (ctx: *anyopaque, bytes: []const u8) WriteError!usize) Sink {
+pub fn fixed(buf: []u8) Sink {
     return .{
-        .buf = undefined,
+        .buf = buf,
         .pos = 0,
-        .ctx = ctx,
-        .writeFn = writeFn,
+        .drainFn = fixedDrain,
     };
 }
 
-pub fn print(self: *const Sink, comptime format: []const u8, args: anytype) WriteError!void {
-    try std.fmt.format(self.*, format, args);
-    try @constCast(self).flush();
+pub fn discarding(buf: []u8) Sink {
+    return .{
+        .buf = buf,
+        .pos = 0,
+        .drainFn = discardingDrain,
+    };
 }
 
-pub fn writeAll(self: *const Sink, bytes: []const u8) WriteError!void {
-    _ = try @constCast(self).write(bytes);
-    try @constCast(self).flush();
+fn fixedDrain(self: *Sink, bytes: []const u8) WriteError!usize {
+    _ = self;
+    _ = bytes;
+    return WriteError.NoSpaceLeft;
 }
 
-pub fn writeBytesNTimes(self: *const Sink, bytes: []const u8, n: usize) WriteError!void {
+fn discardingDrain(self: *Sink, bytes: []const u8) WriteError!usize {
+    _ = bytes;
+    const len = self.pos;
+    self.pos = 0;
+    return len;
+}
+
+pub fn print(self: *Sink, comptime format: []const u8, args: anytype) WriteError!void {
+    try fmt.format(self, format, args);
+}
+
+pub fn buffered(self: *Sink) []const u8 {
+    return self.buf[0..self.pos];
+}
+
+pub fn writeAll(self: *Sink, bytes: []const u8) WriteError!void {
+    _ = try self.write(bytes);
+}
+
+pub fn writeBytesNTimes(self: *Sink, bytes: []const u8, n: usize) WriteError!void {
     for (0..n) |_| {
-        _ = try @constCast(self).write(bytes);
+        _ = try self.write(bytes);
     }
-    try @constCast(self).flush();
+}
+pub fn writeByteNTimes(self: *Sink, byte: u8, n: usize) WriteError!void {
+    for (0..n) |_| {
+        _ = try self.writeByte(byte);
+    }
 }
 
 pub fn write(self: *Sink, bytes: []const u8) WriteError!usize {
@@ -50,8 +74,7 @@ pub fn write(self: *Sink, bytes: []const u8) WriteError!usize {
 
 pub fn writeByte(self: *Sink, byte: u8) WriteError!void {
     if (self.pos >= self.buf.len) {
-        _ = try self.writeFn(self.ctx, self.buf[0..self.pos]);
-        self.pos = 0;
+        try self.flush();
     }
 
     self.buf[self.pos] = byte;
@@ -60,7 +83,7 @@ pub fn writeByte(self: *Sink, byte: u8) WriteError!void {
 
 pub fn flush(self: *Sink) WriteError!void {
     if (self.pos > 0) {
-        _ = try self.writeFn(self.ctx, self.buf[0..self.pos]);
+        _ = try self.drainFn(self, self.buf[0..self.pos]);
         self.pos = 0;
     }
 }

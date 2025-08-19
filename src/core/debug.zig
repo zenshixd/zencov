@@ -27,5 +27,7 @@ pub fn panic(comptime fmt: []const u8, args: anytype) noreturn {
 }
 
 pub fn print(comptime fmt: []const u8, args: anytype) void {
-    io.getStderr().sink().print(fmt, args) catch return;
+    var stderr = io.getStderr();
+    stderr.print(fmt, args) catch return;
+    stderr.flush() catch return;
 }

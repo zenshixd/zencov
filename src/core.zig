@@ -12,12 +12,12 @@ pub const Context = struct {
     cwd: []const u8,
     breakpoints: inst.BreakpointMap,
 
-    pub fn init(gpa: heap.Allocator, arena: heap.Allocator) Context {
+    pub fn init(gpa: heap.Allocator, arena: *heap.Allocator) Context {
         return .{
             .gpa = gpa,
-            .arena = arena,
+            .arena = arena.*,
             .cwd = process.getCwdAlloc(arena) catch unreachable,
-            .breakpoints = .init(arena),
+            .breakpoints = inst.BreakpointMap.init(arena.*),
         };
     }
 
@@ -26,4 +26,26 @@ pub const Context = struct {
     }
 };
 
+pub const HashMap = @import("core/hash_map.zig").HashMap;
+pub const HashMapExtra = @import("core/hash_map.zig").HashMapExtra;
 pub const EnumMask = @import("core/enum_mask.zig").EnumMask;
+
+test {
+    _ = @import("core/array_list.zig");
+    _ = @import("core/buffer_reader.zig");
+    _ = @import("core/crypto.zig");
+    _ = @import("core/debug.zig");
+    _ = @import("core/enum_mask.zig");
+    _ = @import("core/fmt.zig");
+    _ = @import("core/hash_map.zig");
+    _ = @import("core/heap.zig");
+    _ = @import("core/io.zig");
+    _ = @import("core/logger.zig");
+    _ = @import("core/math.zig");
+    _ = @import("core/mem.zig");
+    _ = @import("core/meta.zig");
+    _ = @import("core/path.zig");
+    _ = @import("core/platform.zig");
+    _ = @import("core/process.zig");
+    _ = @import("core/radix_tree.zig");
+}

@@ -1,7 +1,6 @@
-const std = @import("std");
 const core = @import("../../core.zig");
 const meta = @import("../../core/meta.zig");
-const assert = std.debug.assert;
+const debug = @import("../../core/debug.zig");
 const builtin = @import("builtin");
 const posix = @import("posix.zig");
 const native_arch = builtin.target.cpu.arch;
@@ -453,28 +452,6 @@ pub const ThreadStateArm64 = extern struct {
     pc: u64, // Program counter
     cpsr: u32, // Current program status register
     flags: u32, // Flags
-
-    pub fn format(self: ThreadStateArm64, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print(
-            \\ThreadStateArm64{{
-            \\    .fp = {x},
-            \\    .lr = {x},
-            \\    .sp = {x},
-            \\    .pc = {x},
-            \\    .cpsr = {b},
-            \\    .flags = {b},
-            \\}}
-        , .{
-            self.fp,
-            self.lr,
-            self.sp,
-            self.pc,
-            self.cpsr,
-            self.flags,
-        });
-    }
 };
 
 pub const VMRegionRecurseResult = struct {
@@ -483,26 +460,6 @@ pub const VMRegionRecurseResult = struct {
     depth: u32 = 0,
     info: VMRegionSubmapInfo64 = undefined,
     cnt: u32 = VM_REGION_SUBMAP_INFO_COUNT_64,
-
-    pub fn format(self: VMRegionRecurseResult, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print(
-            \\VMRegionRecurseResult{{
-            \\    .address = {x},
-            \\    .size = {d},
-            \\    .depth = {d},
-            \\    .info = {},
-            \\    .cnt = {d},
-            \\}}
-        , .{
-            self.address,
-            self.size,
-            self.depth,
-            self.info,
-            self.cnt,
-        });
-    }
 };
 pub const VMRegionSubmapInfo64 = extern struct {
     // present across protection
@@ -540,54 +497,6 @@ pub const VMRegionSubmapInfo64 = extern struct {
     user_wired_count: u16,
     pages_reusable: u32,
     object_id_full: u64 align(4),
-
-    pub fn format(self: VMRegionSubmapInfo64, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print(
-            \\VMRegionSubmapInfo64{{
-            \\    .protection = {b},
-            \\    .max_protection = {b},
-            \\    .inheritance = {d},
-            \\    .offset = {d},
-            \\    .user_tag = {d},
-            \\    .pages_resident = {d},
-            \\    .pages_shared_now_private = {d},
-            \\    .pages_swapped_out = {d},
-            \\    .pages_dirtied = {d},
-            \\    .ref_count = {d},
-            \\    .shadow_depth = {d},
-            \\    .external_pager = {d},
-            \\    .share_mode = {d},
-            \\    .is_submap = {d},
-            \\    .behavior = {d},
-            \\    .object_id = {d},
-            \\    .user_wired_count = {d},
-            \\    .pages_reusable = {d},
-            \\    .object_id_full = {d},
-            \\}}
-        , .{
-            self.protection,
-            self.max_protection,
-            self.inheritance,
-            self.offset,
-            self.user_tag,
-            self.pages_resident,
-            self.pages_shared_now_private,
-            self.pages_swapped_out,
-            self.pages_dirtied,
-            self.ref_count,
-            self.shadow_depth,
-            self.external_pager,
-            self.share_mode,
-            self.is_submap,
-            self.behavior,
-            self.object_id,
-            self.user_wired_count,
-            self.pages_reusable,
-            self.object_id_full,
-        });
-    }
 };
 pub const VM_REGION_SUBMAP_INFO_COUNT_64 = 16;
 
@@ -623,7 +532,7 @@ pub const Port = enum(u32) {
         return @as([*]u8, @ptrFromInt(address))[0..size];
     }
 
-    pub fn vmDeallocate(self: Port, address: []const u8) !void {
+    pub fn vmDeallocate(self: Port, address: []const u8) KernelError!void {
         try checkKern(internal.mach_vm_deallocate(self, @intFromPtr(address.ptr), address.len));
     }
 
@@ -649,7 +558,7 @@ pub const Port = enum(u32) {
     pub fn readMemOverwrite(self: Port, address: [*]const u8, size: usize, out: []u8) ![]const u8 {
         var bytes_read: u32 = 0;
         try checkKern(internal.mach_vm_read_overwrite(self, address, size, out.ptr, &bytes_read));
-        assert(bytes_read == size);
+        debug.assert(bytes_read == size);
         return out;
     }
 
@@ -688,7 +597,7 @@ pub const Port = enum(u32) {
         var count: u32 = flavor.count();
         try checkKern(internal.thread_get_state(self, flavor, &state, &count));
         if (count != flavor.count()) {
-            std.log.debug("threadGetState: count: {} != flavor.count(): {}", .{ count, flavor.count() });
+            debug.panic("threadGetState: count: {} != flavor.count(): {}", .{ count, flavor.count() });
         }
         return state;
     }
@@ -719,7 +628,7 @@ pub const Port = enum(u32) {
 pub const KernelError = meta.ErrorSetFromEnum(KernelReturn);
 const kernReturnToErrorMap = meta.createEnumToErrorSetTable(KernelReturn, KernelError);
 
-pub fn checkKern(ret: KernelReturn) !void {
+pub fn checkKern(ret: KernelReturn) KernelError!void {
     switch (ret) {
         .Success => {},
         inline else => |tag| {
@@ -803,28 +712,6 @@ pub const MessageHeader = extern struct {
     local_port: Port,
     voucher_port: Port,
     id: MessageId,
-
-    pub fn format(self: MessageHeader, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print(
-            \\MessageHeader{{
-            \\    .bits = {b},
-            \\    .size = {},
-            \\    .remote_port = {},
-            \\    .local_port = {},
-            \\    .voucher_port = {},
-            \\    .id = {},
-            \\}}
-        , .{
-            self.bits,
-            self.size,
-            self.remote_port,
-            self.local_port,
-            self.voucher_port,
-            self.id,
-        });
-    }
 };
 
 pub const MessageBody = extern struct {
@@ -848,48 +735,12 @@ pub const MessageRequestExceptionRaise = extern struct {
     exception: EXC,
     codeCount: u32,
     code: [2]i64 align(4),
-
-    pub fn format(self: MessageRequestExceptionRaise, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print(
-            \\MessageRequestExceptionRaise{{
-            \\    .thread = {},
-            \\    .task = {},
-            \\    .exception = {},
-            \\    .codeCount = {},
-            \\    .code = {{
-            \\        {d},
-            \\        {d},
-            \\    }},
-            \\}}
-        , .{
-            self.thread.name,
-            self.task.name,
-            self.exception,
-            self.codeCount,
-            self.code[0],
-            self.code[1],
-        });
-    }
 };
 
 pub const MessageReplyExceptionRaise = extern struct {
     hdr: MessageHeader,
     NDR: NDR_record,
     RetCode: KernelReturn,
-
-    pub fn format(self: MessageReplyExceptionRaise, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print(
-            \\MessageReplyExceptionRaise{{
-            \\    .RetCode = {},
-            \\}}
-        , .{
-            self.RetCode,
-        });
-    }
 };
 
 pub const MessageReplyError = extern struct {

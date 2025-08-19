@@ -1,16 +1,105 @@
-const std = @import("std");
 const core = @import("../../core.zig");
-const assert = std.debug.assert;
 const builtin = @import("builtin");
 
 pub const ReturnCode = enum(i32) { ok = 0, fail = -1, _ };
+
+pub const MemProt = core.EnumMask(enum(i32) {
+    read = 0x01,
+    write = 0x02,
+    exec = 0x04,
+
+    pub const none = 0x00;
+});
+pub const MmapFlags = core.EnumMask(enum(i32) {
+    shared = 0x01,
+    private = 0x02,
+    fixed = 0x10,
+    anonymous = 0x20,
+});
+
+const MAP_FAILED = @as([*]u8, -1);
+
+pub const MmapError = error{
+    AccessDenied,
+    BadFileDescriptor,
+    AlreadyExists,
+    InvalidArgument,
+    OpenFileLimitReached,
+    OutOfMemory,
+    OffsetOutOfRange,
+};
+
+pub fn mmap(addr: ?[*]u8, len: usize, prot: MemProt, flags: MmapFlags, fd: i32, offset: usize) MmapError!void {
+    const rc = internal.mmap(addr, len, @bitCast(prot), @bitCast(flags), fd, offset);
+    switch (errno(rc)) {
+        ErrnoCodes.OK => {},
+        ErrnoCodes.EPERM => return error.AccessDenied,
+        ErrnoCodes.EBADF => return error.BadFileDescriptor,
+        ErrnoCodes.EEXIST => return error.AlreadyExists,
+        ErrnoCodes.EINVAL => return error.InvalidArgument,
+        ErrnoCodes.ENFILE => return error.OpenFileLimitReached,
+        ErrnoCodes.ENOMEM => return error.OutOfMemory,
+        ErrnoCodes.EOVERFLOW => return error.OffsetOutOfRange,
+        else => unreachable,
+    }
+    return @as([*]u8, @ptrFromInt(@intFromEnum(rc)))[0..len];
+}
+
+pub fn munmap(addr: ?[*]u8, len: usize) MmapError!void {
+    const rc = internal.munmap(addr, len);
+    switch (errno(rc)) {
+        ErrnoCodes.OK => {},
+        ErrnoCodes.EPERM => return error.AccessDenied,
+        ErrnoCodes.EBADF => return error.BadFileDescriptor,
+        ErrnoCodes.EEXIST => return error.AlreadyExists,
+        ErrnoCodes.EINVAL => return error.InvalidArgument,
+        ErrnoCodes.ENFILE => return error.OpenFileLimitReached,
+        ErrnoCodes.ENOMEM => return error.OutOfMemory,
+        ErrnoCodes.EOVERFLOW => return error.OffsetOutOfRange,
+        else => unreachable,
+    }
+}
+
+pub const MremapFlags = core.EnumMask(enum(i32) {
+    maymove = 0x1,
+    fixed = 0x2,
+    dont_unmap = 0x4,
+});
+
+pub const MremapError = error{
+    RegionLocked,
+    InvalidAddress,
+    InvalidArgument,
+    OutOfMemory,
+};
+
+pub fn mremap(old_addr: ?[*]u8, old_size: usize, new_size: usize, flags: MremapFlags, new_addr: ?*[*]u8) MremapError![]u8 {
+    const rc = internal.mremap(old_addr, old_size, new_size, flags, new_addr);
+    switch (errno(rc)) {
+        ErrnoCodes.OK => {},
+        ErrnoCodes.EAGAIN => return error.RegionLocked,
+        ErrnoCodes.EFAULT => return error.InvalidAddress,
+        ErrnoCodes.EINVAL => return error.InvalidArgument,
+        ErrnoCodes.ENOMEM => return error.OutOfMemory,
+        else => unreachable,
+    }
+    return @as([*]u8, @ptrFromInt(@intFromEnum(rc)))[0..new_size];
+}
+
 pub const PID = enum(i32) {
     current = 0,
     _,
 
-    pub fn wait(self: PID, options: i32) !Status {
+    pub fn wait(self: PID, options: i32) error{ NoChildProcesses, Interrupted, InvalidArgument }!Status {
         var status: i32 = undefined;
-        try errno(waitpid(self, &status, options));
+        const rc = internal.waitpid(self, &status, options);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.ECHILD => return error.NoChildProcesses,
+            ErrnoCodes.EINTR => return error.Interrupted,
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
         return @enumFromInt(status);
     }
 };
@@ -51,7 +140,6 @@ pub const W = struct {
     pub const CONTINUED = 8;
     pub const NOWAIT = 0x1000000;
 };
-pub extern "c" fn waitpid(pid: PID, status: *i32, options: i32) ReturnCode;
 
 pub const SigSet = [1024 / 32]u32;
 const sigset_len = @typeInfo(SigSet).array.len;
@@ -60,30 +148,68 @@ pub const filled_sigset = [_]u32{(1 << (31 & (@bitSizeOf(usize) - 1))) - 1} ++ [
 pub const SpawnFileActions = struct {
     pub const Ref = *opaque {};
     ref: Ref,
-    pub fn init() !SpawnFileActions {
+    pub fn init() error{OutOfMemory}!SpawnFileActions {
         var actions: SpawnFileActions = undefined;
-        try errno(internal.posix_spawn_file_actions_init(&actions.ref));
+        const rc = internal.posix_spawn_file_actions_init(&actions.ref);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.ENOMEM => return error.OutOfMemory,
+            else => unreachable,
+        }
         return actions;
     }
 
-    pub fn destroy(self: *SpawnFileActions) !void {
-        try errno(internal.posix_spawn_file_actions_destroy(self));
+    pub fn destroy(self: *SpawnFileActions) error{InvalidArgument}!void {
+        const rc = internal.posix_spawn_file_actions_destroy(self);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
     }
 
-    pub fn addOpen(self: *SpawnFileActions, fd: FD, path: [*:0]const u8, oflag: i32, mode: Mode) !void {
-        try errno(internal.posix_spawn_file_actions_addopen(&self.ref, fd, path, oflag, mode));
+    pub fn addOpen(self: *SpawnFileActions, fd: FD, path: [*:0]const u8, oflag: i32, mode: Mode) error{ InvalidArgument, OutOfMemory, InvalidDescriptor }!void {
+        const rc = internal.posix_spawn_file_actions_addopen(&self.ref, fd, path, oflag, mode);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            ErrnoCodes.ENOMEM => return error.OutOfMemory,
+            ErrnoCodes.EBADF => return error.InvalidDescriptor,
+            else => unreachable,
+        }
     }
 
-    pub fn addClose(self: *SpawnFileActions, fd: FD) !void {
-        try errno(internal.posix_spawn_file_actions_addclose(&self.ref, fd));
+    pub fn addClose(self: *SpawnFileActions, fd: FD) error{ InvalidArgument, OutOfMemory, InvalidDescriptor }!void {
+        const rc = internal.posix_spawn_file_actions_addclose(&self.ref, fd);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            ErrnoCodes.ENOMEM => return error.OutOfMemory,
+            ErrnoCodes.EBADF => return error.InvalidDescriptor,
+            else => unreachable,
+        }
     }
 
-    pub fn addDup2(self: *SpawnFileActions, fd: FD, new_fd: FD) !void {
-        try errno(internal.posix_spawn_file_actions_adddup2(&self.ref, fd, new_fd));
+    pub fn addDup2(self: *SpawnFileActions, fd: FD, new_fd: FD) error{ InvalidArgument, OutOfMemory, InvalidDescriptor }!void {
+        const rc = internal.posix_spawn_file_actions_adddup2(&self.ref, fd, new_fd);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            ErrnoCodes.ENOMEM => return error.OutOfMemory,
+            ErrnoCodes.EBADF => return error.InvalidDescriptor,
+            else => unreachable,
+        }
     }
 
-    pub fn addInherit(self: *SpawnFileActions, fd: FD) !void {
-        try errno(internal.posix_spawn_file_actions_addinherit_np(&self.ref, fd));
+    pub fn addInherit(self: *SpawnFileActions, fd: FD) error{ InvalidArgument, OutOfMemory, InvalidDescriptor }!void {
+        const rc = internal.posix_spawn_file_actions_addinherit_np(&self.ref, fd);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            ErrnoCodes.ENOMEM => return error.OutOfMemory,
+            ErrnoCodes.EBADF => return error.InvalidDescriptor,
+            else => unreachable,
+        }
     }
 };
 
@@ -96,67 +222,144 @@ pub const SPAWN_START_SUSPENDED = 0x0080;
 pub const SpawnAttr = struct {
     pub const Ref = *opaque {};
     ref: Ref,
-    pub fn init() !SpawnAttr {
+    pub fn init() error{ OutOfMemory, InvalidArgument }!SpawnAttr {
         var attr: SpawnAttr = undefined;
-        try errno(internal.posix_spawnattr_init(&attr.ref));
+        const rc = internal.posix_spawnattr_init(&attr.ref);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.ENOMEM => return error.OutOfMemory,
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
         return attr;
     }
 
-    pub fn destroy(self: *SpawnAttr) !void {
-        try errno(internal.posix_spawnattr_destroy(&self.ref));
+    pub fn destroy(self: *SpawnAttr) error{InvalidArgument}!void {
+        const rc = internal.posix_spawnattr_destroy(&self.ref);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
     }
 
-    pub fn getFlags(self: *const SpawnAttr) !i16 {
+    pub fn getFlags(self: *const SpawnAttr) error{InvalidArgument}!i16 {
         var flags: i16 = undefined;
-        try errno(internal.posix_spawnattr_getflags(&self.ref, &flags));
+        const rc = internal.posix_spawnattr_getflags(&self.ref, &flags);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
         return flags;
     }
 
-    pub fn setFlags(self: *SpawnAttr, flags: i16) !void {
-        try errno(internal.posix_spawnattr_setflags(&self.ref, flags));
+    pub fn setFlags(self: *SpawnAttr, flags: i16) error{InvalidArgument}!void {
+        const rc = internal.posix_spawnattr_setflags(&self.ref, flags);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
     }
 
-    pub fn getSigDefault(self: *const SpawnAttr) !SigSet {
+    pub fn getSigDefault(self: *const SpawnAttr) error{InvalidArgument}!SigSet {
         var sigdef: u32 = undefined;
-        try errno(internal.posix_spawnattr_getsigdefault(&self.ref, &sigdef));
+        const rc = internal.posix_spawnattr_getsigdefault(&self.ref, &sigdef);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
         return sigdef;
     }
 
-    pub fn setSigDefault(self: *SpawnAttr, sigdef: SigSet) !void {
-        try errno(internal.posix_spawnattr_setsigdefault(&self.ref, &sigdef));
+    pub fn setSigDefault(self: *SpawnAttr, sigdef: SigSet) error{InvalidArgument}!void {
+        const rc = internal.posix_spawnattr_setsigdefault(&self.ref, &sigdef);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
     }
 
-    pub fn getSigMask(self: *const SpawnAttr) !SigSet {
+    pub fn getSigMask(self: *const SpawnAttr) error{InvalidArgument}!SigSet {
         var sigmask: u32 = undefined;
-        try errno(internal.posix_spawnattr_getsigmask(&self.ref, &sigmask));
+        const rc = internal.posix_spawnattr_getsigmask(&self.ref, &sigmask);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
         return sigmask;
     }
 
-    pub fn setSigMask(self: *SpawnAttr, sigmask: SigSet) !void {
-        try errno(internal.posix_spawnattr_setsigmask(&self.ref, &sigmask));
+    pub fn setSigMask(self: *SpawnAttr, sigmask: SigSet) error{InvalidArgument}!void {
+        const rc = internal.posix_spawnattr_setsigmask(&self.ref, &sigmask);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
     }
 
-    pub fn getProcessGroup(self: *const SpawnAttr) !PID {
+    pub fn getProcessGroup(self: *const SpawnAttr) error{InvalidArgument}!PID {
         var pid: PID = undefined;
-        try errno(internal.posix_spawnattr_getpgroup(&self.ref, &pid));
+        const rc = internal.posix_spawnattr_getpgroup(&self.ref, &pid);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
         return pid;
     }
 
-    pub fn setProcessGroup(self: *SpawnAttr, pid: *const PID) !void {
-        try errno(internal.posix_spawnattr_setpgroup(&self.ref, pid));
+    pub fn setProcessGroup(self: *SpawnAttr, pid: *const PID) error{InvalidArgument}!void {
+        const rc = internal.posix_spawnattr_setpgroup(&self.ref, pid);
+        switch (errno(rc)) {
+            ErrnoCodes.OK => {},
+            ErrnoCodes.EINVAL => return error.InvalidArgument,
+            else => unreachable,
+        }
     }
 };
 
-pub fn spawn(argv: [*:null]const ?[*:0]const u8, file_actions: ?SpawnFileActions, attrp: ?SpawnAttr, envp: [*:null]const ?[*:0]const u8) !PID {
+pub const SpawnError = error{
+    ArgvNotProvided,
+    ProcessLimitReached,
+    OutOfMemory,
+    Unsupported,
+    PidExists,
+    InvalidArgument,
+    PidNestingLimitReached,
+    PermissionDenied,
+};
+
+pub fn spawn(argv: [*:null]const ?[*:0]const u8, file_actions: ?SpawnFileActions, attrp: ?SpawnAttr, envp: [*:null]const ?[*:0]const u8) SpawnError!PID {
     var pid: PID = undefined;
     const file_actions_ref = if (file_actions) |fa| &fa.ref else null;
     const attrp_ref = if (attrp) |a| &a.ref else null;
     const exec = argv[0] orelse return error.ArgvNotProvided;
-    try errno(internal.posix_spawn(&pid, exec, file_actions_ref, attrp_ref, argv[1..], envp));
+    const rc = internal.posix_spawn(&pid, exec, file_actions_ref, attrp_ref, argv[1..], envp);
+    switch (errno(rc)) {
+        ErrnoCodes.OK => {},
+        ErrnoCodes.EAGAIN => return error.ProcessLimitReached,
+        ErrnoCodes.ENOMEM => return error.OutOfMemory,
+        ErrnoCodes.ENOSYS => return error.Unsupported,
+        ErrnoCodes.EEXIST => return error.PidExists,
+        ErrnoCodes.EINVAL => return error.InvalidArgument,
+        ErrnoCodes.ENOSPC => return error.PidNestingLimitReached,
+        ErrnoCodes.EPERM => return error.PermissionDenied,
+        else => unreachable,
+    }
     return pid;
 }
 
 const internal = struct {
+    pub extern "c" fn mmap(addr: ?[*]u8, len: usize, prot: i32, flags: i32, fd: i32, offset: usize) ReturnCode;
+    pub extern "c" fn munmap(addr: ?[*]u8, len: usize) ReturnCode;
+    pub extern "c" fn mremap(old_addr: ?[*]u8, old_size: usize, new_size: usize, flags: i32, new_addr: ?[*]u8) ReturnCode;
+    pub extern "c" fn waitpid(pid: PID, status: *i32, options: i32) ReturnCode;
     pub extern "c" fn posix_spawnattr_init(attr: *SpawnAttr.Ref) ReturnCode;
     pub extern "c" fn posix_spawnattr_destroy(attr: *SpawnAttr.Ref) ReturnCode;
     pub extern "c" fn posix_spawnattr_setflags(attr: *SpawnAttr.Ref, flags: i16) ReturnCode;
@@ -192,37 +395,24 @@ const internal = struct {
         envp: [*:null]const ?[*:0]const u8,
     ) ReturnCode;
 
-    extern "c" fn __error() *ErrnoCodes;
-
-    pub const errno_internal = switch (builtin.os.tag) {
-        .macos => __error,
-        else => @compileError("Unsupported OS"),
-    };
+    // Linux
+    pub extern "c" fn __errno_location() *c_int;
+    // Macos
+    pub extern "c" fn __error() *ErrnoCodes;
 };
-pub fn errno(rc: ReturnCode) ErrnoError!void {
-    if (rc != .fail) {
-        return;
+
+pub fn errno(rc: ReturnCode) ErrnoCodes {
+    if (rc == ReturnCode.fail) {
+        return @enumFromInt(switch (builtin.os.tag) {
+            .linux => internal.__errno_location().*,
+            .macos => internal.__error().*,
+            else => @compileError("Unsupported OS"),
+        });
     }
 
-    const code = internal.errno_internal();
-    assert(@intFromEnum(code.*) > 0);
-    return switch (code.*) {
-        .OK => {},
-        inline else => |tag| {
-            // HUH ? why do i need to change quota here ???? there isnt that many values
-            @setEvalBranchQuota(6000);
-            inline for (errnoToErrorMap) |entry| {
-                if (entry.value == tag) {
-                    return entry.error_set;
-                }
-            }
-            unreachable;
-        },
-    };
+    return ErrnoCodes.OK;
 }
 
-const errnoToErrorMap = core.createEnumToErrorSetTable(ErrnoCodes, ErrnoError);
-pub const ErrnoError = core.ErrorSetFromEnum(ErrnoCodes);
 pub const ErrnoCodes = enum(i32) {
     OK = 0,
     // Basic error codes

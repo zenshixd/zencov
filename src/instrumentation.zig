@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("core.zig");
+const hash_map = @import("core/hash_map.zig");
 
 pub const base = @import("instrumentation/base.zig");
 
@@ -72,7 +73,7 @@ pub const Breakpoint = struct {
     original_opcode: base.InstructionSize,
     triggered: bool,
 };
-pub const BreakpointMap = std.AutoArrayHashMap(BreakpointKey, Breakpoint);
+pub const BreakpointMap = core.HashMap(BreakpointKey, Breakpoint, hash_map.DefaultContext);
 pub const BRK_OPCODE = base.BRK_OPCODE;
 pub const InstructionSize = base.InstructionSize;
 pub const MemoryProtection = base.MemoryProtection;

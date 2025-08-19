@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const mem = std.mem;
 
-const expectEqual = std.testing.expectEqual;
+const expect = @import("../test/expect.zig").expect;
 
 pub const Prefix = struct {
     pos: u32,
@@ -271,10 +271,10 @@ test "basic usage, no splitting existing nodes" {
     _ = try tree.put("foobar", 3);
     _ = try tree.put("foobarbaz", 4);
 
-    try expectEqual(1, tree.get("foo"));
-    try expectEqual(2, tree.get("bar"));
-    try expectEqual(3, tree.get("foobar"));
-    try expectEqual(4, tree.get("foobarbaz"));
+    try expect(tree.get("foo")).toEqual(1);
+    try expect(tree.get("bar")).toEqual(2);
+    try expect(tree.get("foobar")).toEqual(3);
+    try expect(tree.get("foobarbaz")).toEqual(4);
 }
 
 test "split existing node" {
@@ -286,10 +286,10 @@ test "split existing node" {
     _ = try tree.put("aac", 3);
     _ = try tree.put("aad", 4);
 
-    try expectEqual(1, tree.get("aaa"));
-    try expectEqual(2, tree.get("aab"));
-    try expectEqual(3, tree.get("aac"));
-    try expectEqual(4, tree.get("aad"));
+    try expect(tree.get("aaa")).toEqual(1);
+    try expect(tree.get("aab")).toEqual(2);
+    try expect(tree.get("aac")).toEqual(3);
+    try expect(tree.get("aad")).toEqual(4);
 }
 
 test "split long node" {
@@ -299,8 +299,8 @@ test "split long node" {
     _ = try tree.put("abcde", 1);
     _ = try tree.put("ab", 2);
 
-    try expectEqual(1, tree.get("abcde"));
-    try expectEqual(2, tree.get("ab"));
+    try expect(tree.get("abcde")).toEqual(1);
+    try expect(tree.get("ab")).toEqual(2);
 }
 
 test "change value for existing node" {
@@ -310,6 +310,6 @@ test "change value for existing node" {
     _ = try tree.put("abc", 1);
     _ = try tree.put("abc", 2);
 
-    try expectEqual(2, tree.get("abc"));
-    try expectEqual(null, tree.get("ab"));
+    try expect(tree.get("abc")).toEqual(2);
+    try expect(tree.get("ab")).toEqual(null);
 }

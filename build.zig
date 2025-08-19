@@ -40,9 +40,11 @@ pub fn build(b: *std.Build) void {
         .root_module = zencov,
         .filter = b.option([]const u8, "filter", "Run only the specified test"),
     });
+    b.installArtifact(unit_tests);
 
     const test_codesign = getCodesignStep(b, unit_tests);
     const run_unit_tests = b.addRunArtifact(unit_tests);
+    run_unit_tests.step.dependOn(b.getInstallStep());
     run_unit_tests.step.dependOn(&test_codesign.step);
     if (b.option(bool, "update", "Update snapshots")) |_| {
         run_unit_tests.setEnvironmentVariable("SNAPSHOT_UPDATE", "1");

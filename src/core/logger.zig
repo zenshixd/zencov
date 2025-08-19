@@ -1,3 +1,4 @@
+const std = @import("std");
 const io = @import("./io.zig");
 
 pub const LogLevel = enum {
@@ -53,11 +54,8 @@ const Logger = struct {
             break :stream io.getStdout();
         };
 
-        var sink = stream.sink();
-        nosuspend {
-            sink.print(prefix1 ++ prefix2 ++ format ++ "\n", args) catch return;
-            sink.flush() catch return;
-        }
+        stream.print(prefix1 ++ prefix2 ++ format ++ "\n", args) catch return;
+        stream.flush() catch return;
     }
 };
 
