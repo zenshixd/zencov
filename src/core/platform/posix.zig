@@ -1,7 +1,24 @@
 const core = @import("../../core.zig");
+const mem = @import("../../core/mem.zig");
 const builtin = @import("builtin");
 
 pub const ReturnCode = enum(i32) { ok = 0, fail = -1, _ };
+
+pub fn getcwd(buf: []u8) error{ AccessDenied, CurrentWorkingDirectoryUnlinked, NameTooLong, BufferIsZero, OutOfMemory }![]const u8 {
+    const result = internal.getcwd(buf.ptr, buf.len);
+    if (result) |r| {
+        return mem.sliceTo(r, 0);
+    }
+
+    return switch (errno(ReturnCode.fail)) {
+        ErrnoCodes.EACCES => error.AccessDenied,
+        ErrnoCodes.ENOENT => error.CurrentWorkingDirectoryUnlinked,
+        ErrnoCodes.ERANGE => error.NameTooLong,
+        ErrnoCodes.EINVAL => error.BufferIsZero,
+        ErrnoCodes.ENOMEM => error.OutOfMemory,
+        else => unreachable,
+    };
+}
 
 pub const MemProt = core.EnumMask(enum(i32) {
     read = 0x01,
@@ -356,6 +373,7 @@ pub fn spawn(argv: [*:null]const ?[*:0]const u8, file_actions: ?SpawnFileActions
 }
 
 const internal = struct {
+    pub extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
     pub extern "c" fn mmap(addr: ?[*]u8, len: usize, prot: i32, flags: i32, fd: i32, offset: usize) ReturnCode;
     pub extern "c" fn munmap(addr: ?[*]u8, len: usize) ReturnCode;
     pub extern "c" fn mremap(old_addr: ?[*]u8, old_size: usize, new_size: usize, flags: i32, new_addr: ?[*]u8) ReturnCode;
@@ -398,7 +416,7 @@ const internal = struct {
     // Linux
     pub extern "c" fn __errno_location() *c_int;
     // Macos
-    pub extern "c" fn __error() *ErrnoCodes;
+    pub extern "c" fn __error() *c_int;
 };
 
 pub fn errno(rc: ReturnCode) ErrnoCodes {

@@ -1,7 +1,12 @@
 const std = @import("std");
-const panic = std.debug.panic;
+const core = @import("../core.zig");
+const debug = @import("../core/debug.zig");
+const mem = @import("../core/mem.zig");
 const builtin = @import("builtin");
 const native_endian = builtin.cpu.arch.endian();
+
+const io = @import("../core/io.zig");
+const heap = @import("../core/heap.zig");
 
 const Dwarf = @This();
 
@@ -371,7 +376,7 @@ pub const DebugInfoEntry = struct {
         value: DW.AT_Value,
     };
 
-    pub fn deinit(self: *DebugInfoEntry, gpa: std.mem.Allocator) void {
+    pub fn deinit(self: *DebugInfoEntry, gpa: heap.Allocator) void {
         gpa.free(self.attrs);
         for (self.children) |*child_die| {
             child_die.deinit(gpa);
@@ -401,7 +406,7 @@ pub const Abbrev = struct {
     has_children: DW.CHILDREN,
     attrs: []Attr,
 
-    fn deinit(abbrev: *Abbrev, allocator: std.mem.Allocator) void {
+    fn deinit(abbrev: *Abbrev, allocator: heap.Allocator) void {
         allocator.free(abbrev.attrs);
         abbrev.* = undefined;
     }
@@ -431,7 +436,7 @@ sections: std.EnumArray(SectionId, ?Section),
 abbrevs: []Abbrev,
 debug_info_entries: []DebugInfoEntry,
 
-pub fn init(gpa: std.mem.Allocator, sections: std.EnumArray(SectionId, ?Section)) error{
+pub fn init(gpa: heap.Allocator, sections: std.EnumArray(SectionId, ?Section)) error{
     NoDebugInfoSection,
     NoDebugAbbrevSection,
     InvalidDebugInfo,
@@ -439,10 +444,7 @@ pub fn init(gpa: std.mem.Allocator, sections: std.EnumArray(SectionId, ?Section)
     UnexpectedAbbrevTableEnd,
 }!Dwarf {
     const section = sections.get(.debug_info) orelse return error.NoDebugInfoSection;
-    var fbr = std.debug.FixedBufferReader{
-        .buf = section.data,
-        .endian = native_endian,
-    };
+    var fbr = io.Source.fixed(section.data);
     const abbrevs = try parseAbbrevTable(sections, gpa);
     return Dwarf{
         .sections = sections,
@@ -451,7 +453,7 @@ pub fn init(gpa: std.mem.Allocator, sections: std.EnumArray(SectionId, ?Section)
     };
 }
 
-pub fn deinit(self: *Dwarf, gpa: std.mem.Allocator) void {
+pub fn deinit(self: *Dwarf, gpa: heap.Allocator) void {
     for (self.sections.values) |maybe_section| {
         if (maybe_section) |section| {
             gpa.free(section.data);
@@ -470,15 +472,15 @@ pub fn deinit(self: *Dwarf, gpa: std.mem.Allocator) void {
 
 pub fn getString(di: Dwarf, offset: u64) error{NoDebugStrSection}![:0]const u8 {
     const section = di.sections.get(.debug_str) orelse return error.NoDebugStrSection;
-    return std.mem.sliceTo(section.data[offset..], 0);
+    return mem.sliceTo(section.data[offset..], 0);
 }
 
 pub fn getLineString(di: Dwarf, offset: u64) error{NoDebugLineStrSection}![:0]const u8 {
     const section = di.sections.get(.debug_line_str) orelse return error.NoDebugLineStrSection;
-    return std.mem.sliceTo(section.data[offset..], 0);
+    return mem.sliceTo(section.data[offset..], 0);
 }
 
-pub fn readUnitHeader(fbr: *std.debug.FixedBufferReader) error{ EndOfBuffer, InvalidHeaderLen }!UnitHeader {
+pub fn readUnitHeader(fbr: *io.Source) error{ EndOfBuffer, InvalidHeaderLen }!UnitHeader {
     return switch (fbr.readInt(u32) catch return error.EndOfBuffer) {
         0...0xfffffff0 - 1 => |unit_length| .{
             .format = .bit32,
@@ -493,12 +495,9 @@ pub fn readUnitHeader(fbr: *std.debug.FixedBufferReader) error{ EndOfBuffer, Inv
         },
     };
 }
-pub fn parseAbbrevTable(sections: std.EnumArray(SectionId, ?Section), gpa: std.mem.Allocator) error{ NoDebugAbbrevSection, UnexpectedAbbrevTableEnd }![]Abbrev {
+pub fn parseAbbrevTable(sections: std.EnumArray(SectionId, ?Section), gpa: heap.Allocator) error{ NoDebugAbbrevSection, UnexpectedAbbrevTableEnd }![]Abbrev {
     const section = sections.get(.debug_abbrev) orelse return error.NoDebugAbbrevSection;
-    var fbr = std.debug.FixedBufferReader{
-        .buf = section.data,
-        .endian = native_endian,
-    };
+    var fbr = io.Source.fixed(section.data);
     var abbrevs = std.ArrayListUnmanaged(Abbrev).empty;
 
     while (true) {
@@ -543,8 +542,8 @@ fn getAbbrevEntry(abbrevs: []Abbrev, code: u64) ?Abbrev {
     return null;
 }
 
-pub fn parseDebugInfoEntries(fbr: *std.debug.FixedBufferReader, abbrevs: []Abbrev, gpa: std.mem.Allocator) error{ UnexpectedDebugInfoEnd, InvalidDebugInfo }![]DebugInfoEntry {
-    var debug_info_entries = std.ArrayListUnmanaged(DebugInfoEntry).empty;
+pub fn parseDebugInfoEntries(fbr: *io.Source, abbrevs: []Abbrev, gpa: heap.Allocator) error{ UnexpectedDebugInfoEnd, InvalidDebugInfo }![]DebugInfoEntry {
+    var debug_info_entries = core.ArrayList(DebugInfoEntry).empty;
     const unit_header = readUnitHeader(fbr) catch return error.UnexpectedDebugInfoEnd;
     const version = fbr.readInt(u16) catch return error.UnexpectedDebugInfoEnd;
 
@@ -572,7 +571,7 @@ pub fn parseDebugInfoEntries(fbr: *std.debug.FixedBufferReader, abbrevs: []Abbre
     return debug_info_entries.toOwnedSlice(gpa) catch unreachable;
 }
 
-pub fn parseDebugInfoEntry(fbr: *std.debug.FixedBufferReader, format: DwarfFormat, abbrevs: []Abbrev, gpa: std.mem.Allocator) error{ UnexpectedDebugInfoEnd, InvalidDebugInfo }!?DebugInfoEntry {
+pub fn parseDebugInfoEntry(fbr: *io.Source, format: DwarfFormat, abbrevs: []Abbrev, gpa: heap.Allocator) error{ UnexpectedDebugInfoEnd, InvalidDebugInfo }!?DebugInfoEntry {
     if (fbr.pos >= fbr.buf.len) return null;
     const code = fbr.readUleb128(u64) catch return error.UnexpectedDebugInfoEnd;
     if (code == 0) return null;
@@ -619,10 +618,10 @@ pub const FileEntry = struct {
     }
 };
 
-pub fn getLineNumberProgram(di: *Dwarf, gpa: std.mem.Allocator, entry: DebugInfoEntry) error{ NoDebugLineSection, UnexpectedDebugLineSectionEnd }!LineNumberProgram {
+pub fn getLineNumberProgram(di: *Dwarf, gpa: heap.Allocator, entry: DebugInfoEntry) error{ NoDebugLineSection, UnexpectedDebugLineSectionEnd }!LineNumberProgram {
     const debug_line_off = entry.getAttrLinePtr(DW.AT.stmt_list) catch unreachable;
     const section = di.sections.get(.debug_line) orelse return error.NoDebugLineSection;
-    var fbr = std.debug.FixedBufferReader{
+    var fbr = io.Source{
         .buf = section.data,
         .endian = native_endian,
         .pos = debug_line_off,
@@ -657,8 +656,8 @@ pub fn getLineNumberProgram(di: *Dwarf, gpa: std.mem.Allocator, entry: DebugInfo
     var directories = std.ArrayListUnmanaged(FileEntry).empty;
     var files = std.ArrayListUnmanaged(FileEntry).empty;
     if (version < 5) {
-        const comp_dir_attr = entry.getAttr(DW.AT.comp_dir) orelse panic("Cannot retrieve compilation directory", .{});
-        const comp_dir = comp_dir_attr.value.getString(di) catch |err| panic("Cannot retrieve copilation dir value: {}", .{err});
+        const comp_dir_attr = entry.getAttr(DW.AT.comp_dir) orelse debug.panic("Cannot retrieve compilation directory", .{});
+        const comp_dir = comp_dir_attr.value.getString(di) catch |err| debug.panic("Cannot retrieve copilation dir value: {}", .{err});
         directories.append(gpa, .{ .path = comp_dir }) catch unreachable;
         while (true) {
             const directory = fbr.readBytesTo(0) catch return error.UnexpectedDebugLineSectionEnd;
@@ -761,8 +760,8 @@ pub const LineInfo = struct {
 };
 
 pub const LineNumberProgram = struct {
-    gpa: std.mem.Allocator,
-    fbr: std.debug.FixedBufferReader,
+    gpa: heap.Allocator,
+    fbr: io.Source,
     section_end: usize,
     directories: std.ArrayListUnmanaged(FileEntry),
     files: std.ArrayListUnmanaged(FileEntry),
@@ -789,7 +788,7 @@ pub const LineNumberProgram = struct {
     isa: u64 = 0,
     discriminator: u64 = 0,
 
-    pub fn deinit(self: *LineNumberProgram, gpa: std.mem.Allocator) void {
+    pub fn deinit(self: *LineNumberProgram, gpa: heap.Allocator) void {
         self.directories.deinit(gpa);
         self.files.deinit(gpa);
     }
@@ -933,7 +932,7 @@ pub const LineNumberProgram = struct {
     }
 };
 
-fn parseAttrValue(fbr: *std.debug.FixedBufferReader, format: DwarfFormat, form_id: DW.FORM) error{EndOfBuffer}!DW.AT_Value {
+fn parseAttrValue(fbr: *io.Source, format: DwarfFormat, form_id: DW.FORM) error{EndOfBuffer}!DW.AT_Value {
     return switch (form_id) {
         DW.FORM.addr => DW.AT_Value{
             .addr = fbr.readInt(usize) catch
@@ -1123,7 +1122,7 @@ fn parseAttrValue(fbr: *std.debug.FixedBufferReader, format: DwarfFormat, form_i
     };
 }
 
-fn readAddress(fbr: *std.debug.FixedBufferReader, format: DwarfFormat) error{EndOfBuffer}!u64 {
+fn readAddress(fbr: *io.Source, format: DwarfFormat) error{EndOfBuffer}!u64 {
     return switch (format) {
         .bit32 => fbr.readInt(u32) catch return error.EndOfBuffer,
         .bit64 => fbr.readInt(u64) catch return error.EndOfBuffer,

@@ -14,6 +14,24 @@ pub const ArenaAllocator = struct {
         pos: usize,
     };
 
+    pub const Checkpoint = struct {
+        arena: *ArenaAllocator,
+        region: ?*Region,
+        pos: usize,
+
+        pub fn free(self: Checkpoint) void {
+            while (self.arena.current != self.region) {
+                const prev = self.arena.current.?.prev;
+                self.arena.freeRegion(self.arena.current);
+                self.arena.current = prev;
+            }
+
+            if (self.arena.current) |current| {
+                current.pos = self.pos;
+            }
+        }
+    };
+
     current: ?*Region = null,
 
     pub fn deinit(self: *ArenaAllocator) void {
@@ -84,6 +102,19 @@ pub const ArenaAllocator = struct {
         }
 
         debug.panic("invalid free, no arenas allocated", .{});
+    }
+
+    pub fn checkpoint(self: *ArenaAllocator) Checkpoint {
+        const region = self.current orelse return Checkpoint{
+            .region = null,
+            .pos = 0,
+        };
+
+        return Checkpoint{
+            .arena = self,
+            .region = region,
+            .pos = region.pos,
+        };
     }
 
     fn allocRegion(min_size: usize) heap.AllocatorError![]u8 {

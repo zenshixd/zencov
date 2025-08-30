@@ -1,4 +1,6 @@
 const std = @import("std");
+const debug = @import("debug.zig");
+const fmt = @import("fmt.zig");
 
 const PageAllocator = @import("./heap/page_allocator.zig");
 
@@ -35,7 +37,7 @@ pub const Allocator = struct {
     }
 
     pub fn allocAligned(self: Allocator, T: type, len: usize, comptime alignment: usize) AllocatorError![]align(alignment) T {
-        return @alignCast(try self.allocFn(self.ctx, @sizeOf(T) * len, alignment));
+        return @ptrCast(@alignCast(try self.allocFn(self.ctx, @sizeOf(T) * len, alignment)));
     }
 
     pub fn allocAlignedZ(self: Allocator, T: type, len: usize, comptime alignment: usize, comptime sentinel: T) AllocatorError![:sentinel]align(alignment) T {
@@ -49,7 +51,21 @@ pub const Allocator = struct {
     }
 
     pub fn reallocAligned(self: Allocator, T: type, memory: []T, comptime alignment: usize, new_len: usize) AllocatorError![]align(alignment) T {
-        return self.reallocFn(self.ctx, memory, alignment, new_len);
+        const new_mem = try self.reallocFn(self.ctx, @ptrCast(memory), alignment, new_len * @sizeOf(T));
+        return @ptrCast(@alignCast(new_mem));
+    }
+
+    pub fn dupe(self: Allocator, T: type, memory: []const T) AllocatorError![]T {
+        const new_mem = try self.alloc(T, memory.len);
+        @memcpy(new_mem, memory);
+        return new_mem;
+    }
+
+    pub fn dupeZ(self: Allocator, T: type, memory: []const T) AllocatorError![:0]T {
+        const new_mem = try self.alloc(T, memory.len + 1);
+        @memcpy(new_mem[0..memory.len], memory);
+        new_mem[memory.len] = 0;
+        return new_mem[0..memory.len :0];
     }
 
     pub fn free(self: Allocator, memory: anytype) void {
@@ -68,7 +84,7 @@ pub const Allocator = struct {
     fn stdAlloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
         const self: *Allocator = @ptrCast(@alignCast(ctx));
         _ = ret_addr;
-        const ptr = self.allocFn(self.ctx, len, @intFromEnum(alignment)) catch |err| switch (err) {
+        const ptr = self.allocFn(self.ctx, len, alignment.toByteUnits()) catch |err| switch (err) {
             error.OutOfMemory => return null,
         };
         return @ptrCast(ptr);
@@ -86,7 +102,7 @@ pub const Allocator = struct {
     fn stdRemap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
         _ = ret_addr;
         const self: *Allocator = @ptrCast(@alignCast(ctx));
-        const new_mem = self.reallocFn(self.ctx, memory, @intFromEnum(alignment), new_len) catch |err| switch (err) {
+        const new_mem = self.reallocFn(self.ctx, memory, alignment.toByteUnits(), new_len) catch |err| switch (err) {
             error.OutOfMemory => return null,
         };
         return new_mem.ptr;
@@ -100,9 +116,9 @@ pub const Allocator = struct {
     }
 
     // Std compatibility
-    pub fn stdAllocator(self: *Allocator) std.mem.Allocator {
+    pub fn stdAllocator(self: *const Allocator) std.mem.Allocator {
         return std.mem.Allocator{
-            .ptr = @ptrCast(self),
+            .ptr = @ptrCast(@constCast(self)),
             .vtable = &.{
                 .alloc = stdAlloc,
                 .resize = stdResize,

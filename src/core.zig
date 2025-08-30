@@ -8,16 +8,16 @@ const mach = @import("./core/platform.zig").mach;
 
 pub const Context = struct {
     gpa: heap.Allocator,
-    arena: heap.Allocator,
+    arena: *heap.ArenaAllocator,
     cwd: []const u8,
     breakpoints: inst.BreakpointMap,
 
-    pub fn init(gpa: heap.Allocator, arena: *heap.Allocator) Context {
+    pub fn init(gpa: heap.Allocator, arena: *heap.ArenaAllocator) Context {
         return .{
             .gpa = gpa,
-            .arena = arena.*,
-            .cwd = process.getCwdAlloc(arena) catch unreachable,
-            .breakpoints = inst.BreakpointMap.init(arena.*),
+            .arena = arena,
+            .cwd = process.getCwdAlloc(arena.allocator()) catch unreachable,
+            .breakpoints = inst.BreakpointMap.init(arena.allocator()),
         };
     }
 
@@ -26,9 +26,11 @@ pub const Context = struct {
     }
 };
 
+pub const ArrayList = @import("core/array_list.zig").ArrayList;
 pub const HashMap = @import("core/hash_map.zig").HashMap;
-pub const HashMapExtra = @import("core/hash_map.zig").HashMapExtra;
+pub const HashMapDefaultContext = @import("core/hash_map.zig").DefaultContext;
 pub const EnumMask = @import("core/enum_mask.zig").EnumMask;
+pub const EnumArray = std.EnumArray;
 
 test {
     _ = @import("core/array_list.zig");

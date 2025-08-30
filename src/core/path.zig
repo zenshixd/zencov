@@ -15,7 +15,7 @@ pub fn relative(from: []const u8, to: []const u8) []const u8 {
 }
 
 pub fn join(allocator: heap.Allocator, path: []const []const u8) ![]const u8 {
-    return std.fs.path.join(allocator, path);
+    return std.fs.path.join(allocator.stdAllocator(), path);
 }
 
 pub fn isAbsolute(path: []const u8) bool {

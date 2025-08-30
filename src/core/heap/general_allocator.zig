@@ -1,4 +1,5 @@
 const std = @import("std");
+const fmt = @import("../fmt.zig");
 const core = @import("../../core.zig");
 const mem = @import("../mem.zig");
 const debug = @import("../debug.zig");
@@ -45,19 +46,24 @@ pub const GeneralAllocator = struct {
             const info = entry.value;
             if (info.freed_size == null) {
                 leak_count += 1;
-                logger.err("Stacktrace:", .{});
-                var stacktrace: std.builtin.StackTrace = undefined;
-                std.debug.captureStackTrace(null, &stacktrace);
-                logger.err("{}", .{});
             } else if (info.freed_size.? != info.size) {
                 leak_count += 1;
             }
         }
-
         if (leak_count > 0 and options.log_leaks) {
             logger.err("{} allocations leaked", .{leak_count});
         }
         return leak_count > 0;
+    }
+
+    pub fn unwind(self: *GeneralAllocator) void {
+        _ = self;
+        var maybe_fa: ?*usize = @ptrFromInt(@frameAddress());
+        while (maybe_fa) |fa| {
+            const ra: *usize = @ptrFromInt(@intFromPtr(maybe_fa) + 8);
+            debug.print("ra: {}\n", .{fmt.int(ra.*, fmt.FormatIntMode.hex)});
+            maybe_fa = @ptrFromInt(fa.*);
+        }
     }
 
     pub fn deinit(self: *GeneralAllocator) void {
@@ -127,6 +133,7 @@ test "general allocator" {
     const buf2 = try allocator.alloc(u8, 10);
     const buf3 = try allocator.alloc(u8, 10);
 
+    general_allocator.unwind();
     // Check if there are non-freed allocations
     try expect(general_allocator.detectLeaks()).toEqual(true);
 

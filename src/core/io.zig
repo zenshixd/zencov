@@ -5,26 +5,6 @@ pub const Sink = @import("io/sink.zig");
 pub const Source = @import("io/source.zig");
 
 pub const StdIo = struct {
-    const WriteError = error{
-        NoSpaceLeft,
-        DiskQuota,
-        FileTooBig,
-        InputOutput,
-        DeviceBusy,
-        InvalidArgument,
-        AccessDenied,
-        BrokenPipe,
-        SystemResources,
-        OperationAborted,
-        NotOpenForWriting,
-        LockViolation,
-        WouldBlock,
-        ConnectionResetByPeer,
-        ProcessNotFound,
-        NoDevice,
-        Unexpected,
-    };
-
     var buf: [4096]u8 = undefined;
     interface: Sink = Sink{
         .buf = &buf,
@@ -33,15 +13,15 @@ pub const StdIo = struct {
     },
     handle: std.fs.File,
 
-    pub fn writeAll(self: *StdIo, bytes: []const u8) WriteError!void {
+    pub fn writeAll(self: *StdIo, bytes: []const u8) Sink.WriteError!void {
         return self.interface.writeAll(bytes);
     }
 
-    pub fn print(self: *StdIo, comptime fmt: []const u8, args: anytype) WriteError!void {
+    pub fn print(self: *StdIo, comptime fmt: []const u8, args: anytype) Sink.WriteError!void {
         return self.interface.print(fmt, args);
     }
 
-    pub fn flush(self: *StdIo) WriteError!void {
+    pub fn flush(self: *StdIo) Sink.WriteError!void {
         return self.interface.flush();
     }
 
@@ -68,4 +48,9 @@ pub fn getStdout() StdIo {
 
 pub fn getStderr() StdIo {
     return StdIo{ .handle = std.io.getStdErr() };
+}
+
+test {
+    _ = @import("io/source.zig");
+    _ = @import("io/sink.zig");
 }

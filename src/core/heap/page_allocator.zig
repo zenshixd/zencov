@@ -41,6 +41,10 @@ pub fn alloc(len: usize, alignment: usize) heap.AllocatorError![]u8 {
 /// Uses mremap on Linux
 /// Other platforms dont have remap syscall, so we use regular alloc to check if next page is available
 pub fn realloc(memory: []u8, alignment: usize, new_len: usize) heap.AllocatorError![]u8 {
+    if (memory.len == 0) {
+        return alloc(new_len, alignment);
+    }
+
     const cur_end_page_addr = mem.alignBackward(@intFromPtr(memory.ptr + memory.len), heap.pageSize());
     const new_end_page_addr = mem.alignBackward(@intFromPtr(memory.ptr + new_len), heap.pageSize());
 

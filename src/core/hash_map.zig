@@ -46,6 +46,11 @@ pub fn HashMap(comptime K: type, comptime V: type, comptime Context: type) type 
                 self.used = false;
             }
 
+            pub fn markFree(self: *Metadata) void {
+                self.fingerprint = slot_free;
+                self.used = false;
+            }
+
             pub fn isUsed(self: Metadata) bool {
                 return self.used;
             }
@@ -283,6 +288,14 @@ pub fn HashMap(comptime K: type, comptime V: type, comptime Context: type) type 
             }
         }
 
+        pub fn clearRetainingCapacity(self: *Self) void {
+            var i: usize = 0;
+            while (i < self.capacity()) : (i += 1) {
+                self.metadata.?[i].markFree();
+            }
+            self.size = 0;
+        }
+
         fn allocBuffer(self: Self, size: Hash) error{OutOfMemory}![*]Metadata {
             debug.assert(math.isPowerOfTwo(size));
             const keys_start, const values_start, const values_end = getBufferLen(size);
@@ -323,11 +336,11 @@ pub fn HashMap(comptime K: type, comptime V: type, comptime Context: type) type 
             return @ptrFromInt(@intFromPtr(self.metadata.?) - @sizeOf(Header));
         }
 
-        fn keys(self: Self) []K {
+        pub fn keys(self: Self) []K {
             return self.header().keys[0..self.header().capacity];
         }
 
-        fn values(self: Self) []V {
+        pub fn values(self: Self) []V {
             return self.header().values[0..self.header().capacity];
         }
     };

@@ -6,6 +6,7 @@
 
 const builtin = @import("builtin");
 
+const std = @import("std");
 const core = @import("core.zig");
 const heap = @import("core/heap.zig");
 const debug = @import("core/debug.zig");
@@ -26,15 +27,15 @@ pub fn main() void {
     defer _ = general_allocator.deinit();
 
     var arena_allocator = heap.ArenaAllocator{};
-    var arena = arena_allocator.allocator();
-
-    var ctx = core.Context.init(general_allocator.allocator(), &arena);
-    _ = &ctx;
-
-    // const args = process.argsAlloc(ctx.arena) catch unreachable;
-    // const tracee_cmd = args[1..];
-    // const debug_info = DebugInfo.init(&ctx, tracee_cmd[0], ZENCOV_INCLUDE_PATHS);
-    // _ = debug_info;
+    var ctx = core.Context.init(general_allocator.allocator(), &arena_allocator);
+    const argv = process.Argv.init(ctx.arena.allocator());
+    const tracee_cmd = argv.get(1) orelse {
+        logger.debug("Usage: zencov <tracee-command> [<args>]", .{});
+        return;
+    };
+    logger.debug("tracee_cmd: {}", .{tracee_cmd});
+    const debug_info = DebugInfo.init(&ctx, tracee_cmd, ZENCOV_INCLUDE_PATHS);
+    _ = debug_info;
     //     const pid = bp.runInstrumentedAndWait(&ctx, &debug_info, tracee_cmd);
     //     const coverage_info = cov.getCoverageInfo(&ctx, pid, &debug_info);
     //     const coverage_info2 = cov.getCoverageInfo2(&ctx, pid, &debug_info);
